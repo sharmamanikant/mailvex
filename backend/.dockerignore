@@ -1,0 +1,13 @@
+.venv*
+venv*
+**/__pycache__
+**/.pytest_cache
+**/.pytest-runcheck*
+**/.mypy_cache
+**/.ruff_cache
+**/.local_uploads
+*.db
+*.sqlite
+*.log
+fullrun*.log
+runcheck.db
