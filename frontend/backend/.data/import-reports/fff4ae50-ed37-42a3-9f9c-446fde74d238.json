@@ -1,0 +1,20 @@
+[
+  {
+    "row": 3,
+    "email": "ada@example.com",
+    "status": "DUPLICATE",
+    "reason": "Email already exists in this tenant or import"
+  },
+  {
+    "row": 4,
+    "email": "blocked@example.com",
+    "status": "SUPPRESSED",
+    "reason": "Recipient is suppressed"
+  },
+  {
+    "row": 5,
+    "email": "invalid",
+    "status": "INVALID",
+    "reason": "invalid"
+  }
+]

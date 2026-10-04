@@ -1,0 +1,17 @@
+import { useQuery } from '@tanstack/react-query'
+import { ArrowLeft, CircleAlert, ShieldAlert, ShieldCheck } from 'lucide-react'
+import { Link, useParams } from 'react-router-dom'
+import { sendersApi } from '../api/senders'
+
+export default function SenderHealth({ accessToken }: { accessToken: string }) {
+  const { id } = useParams()
+  const health = useQuery({ queryKey: ['sender-health', id], queryFn: () => sendersApi.getHealth(id!, accessToken) })
+  if (health.isLoading) return <main className="sender-health-page"><Link to="/senders" className="back-link"><ArrowLeft size={16} /> Back to senders</Link><div className="table-state">Evaluating sender health...</div></main>
+  if (health.isError || !health.data) return <main className="sender-health-page"><Link to="/senders" className="back-link"><ArrowLeft size={16} /> Back to senders</Link><div className="table-state error-state">{health.error?.message ?? 'Sender not found'}</div></main>
+  const data = health.data
+  const factors = data.factors as Record<string, unknown>
+  const contributions = data.score_contributions ?? {}
+  const statusClass = data.state.toLowerCase()
+  const Icon = data.state === 'HEALTHY' ? ShieldCheck : data.state === 'CRITICAL' || data.state === 'DISABLED' ? ShieldAlert : CircleAlert
+  return <main className="sender-health-page"><Link to="/senders" className="back-link"><ArrowLeft size={16} /> Back to senders</Link><div className="detail-heading"><div><p className="eyebrow">SENDER HEALTH</p><div className="detail-title"><div className={`health-badge ${statusClass}`}><Icon size={18} /></div><div><h1>{data.state}</h1><p className="muted">{data.summary}</p></div></div></div><div className={`health-score ${statusClass}`}><strong>{data.health_score}</strong><span>/ 100</span></div></div><div className="health-disclaimer">{data.disclaimer}</div><section className="detail-grid"><section className="detail-card"><h2>Failure reasons</h2><ul className="failure-list">{(data.failure_reasons ?? ['No failure signals']).map((reason) => <li key={reason}>{reason}</li>)}</ul></section><section className="detail-card"><h2>Score contributions</h2><ul className="failure-list">{Object.entries(contributions).length ? Object.entries(contributions).map(([key, value]) => <li key={key}><span className="cap">{key.replaceAll('_', ' ')}</span><strong>{value > 0 ? `+${value}` : value}</strong></li>) : <li>No deductions from current factors.</li>}</ul></section></section><section className="detail-card"><h2>Measured factors</h2><div className="custom-detail-grid">{Object.entries(factors).filter(([key]) => !['recent_failures'].includes(key)).map(([key, value]) => <div className="detail-row" key={key}><span>{key.replaceAll('_', ' ')}</span><strong>{String(value)}</strong></div>)}</div></section><section className="detail-card"><h2>Health history</h2>{data.history ? <div className="custom-detail-grid"><div className="detail-row"><span>Current score</span><strong>{data.history.current.health_score ?? '--'} / 100</strong></div><div className="detail-row"><span>7-day average</span><strong>{data.history.avg_7d ?? '--'}</strong></div><div className="detail-row"><span>30-day average</span><strong>{data.history.avg_30d ?? '--'}</strong></div><div className="detail-row"><span>Recordings</span><strong>{data.history.samples}</strong></div><div className="detail-row"><span>Status</span><strong>{data.history.current.state}</strong></div></div> : <p className="muted">No history recorded yet.</p>}</section></main>
+}

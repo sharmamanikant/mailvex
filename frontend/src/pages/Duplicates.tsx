@@ -1,0 +1,14 @@
+import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
+import { ArrowLeft, GitMerge, UsersRound } from 'lucide-react'
+import { Link } from 'react-router-dom'
+import { contactsApi } from '../api/contacts'
+import type { Contact } from '../types/contacts'
+
+export default function Duplicates({ accessToken }: { accessToken: string }) {
+  const client = useQueryClient()
+  const duplicates = useQuery({ queryKey: ['contact-duplicates'], queryFn: () => contactsApi.duplicates(accessToken) })
+  const merge = useMutation({ mutationFn: ({ sourceId, targetId }: { sourceId: string; targetId: string }) => contactsApi.merge(sourceId, targetId, accessToken), onSuccess: () => void client.invalidateQueries({ queryKey: ['contact-duplicates'] }) })
+  return <main className="contact-form-page"><Link to="/contacts" className="back-link"><ArrowLeft size={16} /> Back to contacts</Link><header className="form-heading"><div><p className="eyebrow">CONTACT MANAGEMENT / DATA QUALITY</p><h1>Duplicate review</h1><p className="muted">Compare repeated profiles and keep the most complete record.</p></div></header>{duplicates.isLoading ? <div className="table-state">Finding duplicate profiles...</div> : duplicates.isError ? <div className="table-state error-state">{duplicates.error.message}</div> : duplicates.data?.length ? <div className="duplicate-list">{duplicates.data.map((group) => <DuplicateGroup contacts={group} onMerge={(sourceId, targetId) => merge.mutate({ sourceId, targetId })} busy={merge.isPending} key={group.map((item) => item.id).join('-')} />)}</div> : <div className="table-state"><UsersRound size={30} /><strong>No duplicate profiles found</strong><span>Your directory is currently clean.</span></div>}</main>
+}
+
+function DuplicateGroup({ contacts, onMerge, busy }: { contacts: Contact[]; onMerge: (sourceId: string, targetId: string) => void; busy: boolean }) { return <section className="duplicate-group"><div className="duplicate-group-heading"><div><p className="eyebrow">POSSIBLE MATCH</p><strong>{contacts[0].company}</strong><span>{contacts.length} profiles share this name and company</span></div><GitMerge size={20} /></div><div className="duplicate-options">{contacts.map((contact) => { const name = [contact.first_name, contact.last_name].filter(Boolean).join(' ') || 'Unnamed contact'; return <article className="duplicate-option" key={contact.id}><div className="contact-avatar">{(contact.first_name?.[0] ?? contact.email[0]).toUpperCase()}</div><div><strong>{name}</strong><small>{contact.email}</small><span>{contact.phone || 'No phone'} · {Object.keys(contact.custom_fields).length} custom fields</span></div><button className="outline-button" type="button" disabled={busy} onClick={() => { const source = contacts.find((item) => item.id !== contact.id); if (source) onMerge(source.id, contact.id) }}>Keep this contact</button></article> })}</div></section> }

@@ -1,0 +1,27 @@
+.env
+.env.*
+!.env.example
+!.env.staging.example
+!.env.production.example
+node_modules/
+frontend/dist/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+*.db
+*.sqlite
+.local_uploads/
+backups/
+coverage.xml
+htmlcov/
+
+# TLS/private key material must never be committed
+nginx/certs/*.key
+nginx/certs/*.crt
+nginx/certs/*.pem
+**/*.pem
+**/*.p8
+**/*.pfx
+**/*.jks

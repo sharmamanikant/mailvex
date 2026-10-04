@@ -1,0 +1,3 @@
+export type Conversation = { id: string; tenant_id: string; provider_thread_id: string; sender_id: string | null; contact_id: string | null; campaign_id: string | null; subject: string | null; status: string; assigned_user_id: string | null; notes: string | null; tags: string[]; last_message_at: string | null; reply_count: number }
+export type Reply = { id: string; message_id: string | null; sender_email: string | null; recipient_email: string | null; body_text: string | null; body_html: string | null; classification: string | null; received_at: string }
+export type ConversationDetail = { conversation: Conversation; replies: Reply[] }
