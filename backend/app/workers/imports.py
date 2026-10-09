@@ -51,6 +51,18 @@ class QueueUnavailable(RuntimeError):
     """
 
 
+def _encode_arg(arg: object) -> object:
+    """Serialise a single dispatch argument for the broker.
+
+    Only UUIDs need converting for the JSON serializer; everything else (the
+    column-mapping dict, the duplicate policy) is already wire-safe. Blanket
+    ``str()`` corrupted the mapping into its ``repr``, so the worker read it as
+    a string and ``ImportService.prepare`` died with ``'str' object has no
+    attribute 'get'`` while resolving the email column.
+    """
+    return str(arg) if isinstance(arg, UUID) else arg
+
+
 def _dispatch(task_name: str, *args: object) -> str:
     """Hand the job to the existing celery/redis queue.
 
@@ -68,7 +80,7 @@ def _dispatch(task_name: str, *args: object) -> str:
     from app.tasks.scheduler import celery_app
 
     try:
-        result = celery_app.send_task(task_name, args=[str(arg) for arg in args])
+        result = celery_app.send_task(task_name, args=[_encode_arg(arg) for arg in args])
     except Exception as exc:
         raise QueueUnavailable(f"Could not enqueue {task_name}: {exc}") from exc
     return str(result.id)

@@ -527,6 +527,39 @@ def test_enqueue_dispatches_to_the_celery_broker(monkeypatch) -> None:
     assert all(str(tenant_id) in args for _name, args in sent)
 
 
+def test_enqueue_import_preserves_the_mapping_payload(monkeypatch) -> None:
+    """The column mapping must reach the broker as a dict, not its ``repr``.
+
+    Blanket ``str()`` on dispatch arguments stringified the mapping, so the
+    worker handed ``ImportService.prepare`` a string and every import finished
+    as FAILED with ``'str' object has no attribute 'get'``.
+    """
+    sent: list[tuple[str, list[object]]] = []
+
+    class _Result:
+        id = "task-abc"
+
+    def fake_send_task(name: str, args: list[object] | None = None, **_kwargs: object) -> _Result:
+        sent.append((name, list(args or [])))
+        return _Result()
+
+    monkeypatch.setattr(
+        "app.tasks.scheduler.celery_app.send_task", fake_send_task, raising=False
+    )
+
+    job_id, tenant_id = uuid4(), uuid4()
+    worker_imports.enqueue_import(
+        job_id, tenant_id, "/tmp/file.csv", {"email": "Email", "first_name": "First"}, "UPDATE"
+    )
+
+    name, args = sent[0]
+    assert name == worker_imports.TASK_IMPORT
+    assert args[0] == str(job_id)
+    assert args[1] == str(tenant_id)
+    assert args[3] == {"email": "Email", "first_name": "First"}
+    assert args[4] == "UPDATE"
+
+
 def test_a_finished_import_queues_verification_for_the_rows_it_created(
     monkeypatch, tmp_path
 ) -> None:

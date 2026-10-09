@@ -60,7 +60,7 @@ export default function ContactImport({ accessToken }: { accessToken: string }) 
     queryKey: ['import-job', jobId],
     queryFn: () => importsApi.get(jobId as string, accessToken),
     enabled: Boolean(jobId) && Boolean(accessToken),
-    refetchInterval: (query) => (ACTIVE_STATUSES.includes(String(query.state.data?.status ?? '')) ? 1500 : false),
+    refetchInterval: ACTIVE_STATUSES.includes(job?.status ?? '') ? 1500 : false,
   })
   useEffect(() => {
     if (jobQuery.data) setJob(jobQuery.data)
