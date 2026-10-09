@@ -18,11 +18,12 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-import os
 from typing import Any
 
 from redis import Redis
 from redis.exceptions import RedisError
+
+from app.core.redis_client import build_redis_client
 
 logger = logging.getLogger(__name__)
 
@@ -33,12 +34,7 @@ _CIRCUIT_PREFIX = "crcrm:val:smtp-circuit"
 
 
 def _client() -> Redis:
-    return Redis.from_url(
-        os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        decode_responses=True,
-        socket_connect_timeout=2.0,
-        socket_timeout=2.0,
-    )
+    return build_redis_client()
 
 
 def _fingerprint(value: str) -> str:

@@ -42,6 +42,15 @@ TASK_IMPORT = "crcrm.run_contact_import"
 TASK_VERIFY = "crcrm.run_verification_job"
 
 
+class QueueUnavailable(RuntimeError):
+    """The task broker could not accept the job.
+
+    Distinct from an import failure: the job is still retryable and no partial
+    work was performed, so the API maps this onto ``503`` and leaves the job in
+    a state the caller can retry from.
+    """
+
+
 def _dispatch(task_name: str, *args: object) -> str:
     """Hand the job to the existing celery/redis queue.
 
@@ -50,10 +59,18 @@ def _dispatch(task_name: str, *args: object) -> str:
     API container is replaced by a deploy, which is exactly the failure the
     import status signal must not have. The celery app is imported lazily to
     keep this module free of an import cycle.
+
+    Raises :class:`QueueUnavailable` when the broker cannot be reached so the
+    API answers ``503`` immediately.  Letting the driver exception propagate (or
+    block on the default retry schedule) hung the request thread for minutes
+    during a broker outage.
     """
     from app.tasks.scheduler import celery_app
 
-    result = celery_app.send_task(task_name, args=[str(arg) for arg in args])
+    try:
+        result = celery_app.send_task(task_name, args=[str(arg) for arg in args])
+    except Exception as exc:
+        raise QueueUnavailable(f"Could not enqueue {task_name}: {exc}") from exc
     return str(result.id)
 
 

@@ -17,7 +17,7 @@ current.
 
 from __future__ import annotations
 
-import os
+import logging
 import random
 from collections.abc import Callable
 from datetime import UTC, datetime, timedelta
@@ -27,11 +27,14 @@ from redis import Redis
 from sqlalchemy import select
 from sqlalchemy.orm import Session
 
+from app.core.redis_client import build_redis_client, safe_redis_call
 from app.email_providers import EmailMessage
 from app.email_providers.base import EmailProviderError, ProviderConnectionConfig
 from app.models import SenderAccount, SenderConnection, WarmupSettings
 from app.services.sender_health import SenderHealthService
 from app.services.sender_quotas import SenderQuotaService
+
+logger = logging.getLogger(__name__)
 
 WARMUP_QUEUE = "warmup"
 _BLOCKED_CONNECTION_STATUSES = ("FAILED", "DISABLED", "DISCONNECTED")
@@ -42,15 +45,25 @@ class WarmupSendBlocked(Exception):
 
 
 def arm_sender(sender_id: UUID, run_at: datetime | None = None) -> None:
-    _redis().set(
-        _next_at_key(sender_id),
-        (run_at or datetime.now(UTC)).isoformat(),
-        ex=30 * 86_400,
+    """Schedule the next warmup send.
+
+    Redis holds only the scheduling pointer; ``SenderAccount.warmup_enabled``
+    in the database stays the source of truth for whether warmup should run.
+    A Redis outage must therefore not fail the caller's request, so a failed
+    arm is logged and the send is simply picked up on a later drive.
+    """
+    safe_redis_call(
+        "warmup arm",
+        lambda: _redis().set(
+            _next_at_key(sender_id),
+            (run_at or datetime.now(UTC)).isoformat(),
+            ex=30 * 86_400,
+        ),
     )
 
 
 def disarm_sender(sender_id: UUID) -> None:
-    _redis().delete(_next_at_key(sender_id))
+    safe_redis_call("warmup disarm", lambda: _redis().delete(_next_at_key(sender_id)))
 
 
 class WarmupService:
@@ -199,12 +212,7 @@ def _provider_config(connection: SenderConnection) -> ProviderConnectionConfig:
 
 
 def _redis() -> Redis:
-    return Redis.from_url(
-        os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        decode_responses=True,
-        socket_connect_timeout=2.0,
-        socket_timeout=2.0,
-    )
+    return build_redis_client()
 
 
 def _next_at_key(sender_id: UUID) -> str:
@@ -212,10 +220,16 @@ def _next_at_key(sender_id: UUID) -> str:
 
 
 def _due_time(sender_id: UUID) -> datetime | None:
-    raw = _redis().get(_next_at_key(sender_id))
+    # Unreadable state means "not due": warmup resumes once Redis recovers
+    # rather than the drive loop raising on every sender.
+    raw = safe_redis_call("warmup read", lambda: _redis().get(_next_at_key(sender_id)))
     if raw is None:
         return None
-    parsed = datetime.fromisoformat(str(raw))
+    try:
+        parsed = datetime.fromisoformat(str(raw))
+    except ValueError:
+        logger.warning("warmup pointer for %s is not ISO-8601: %r", sender_id, raw)
+        return None
     return parsed if parsed.tzinfo is not None else parsed.replace(tzinfo=UTC)
 
 

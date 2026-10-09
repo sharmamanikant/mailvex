@@ -152,6 +152,12 @@ class SendingService:
                 Contact.tenant_id == self.tenant_id,
             )
         )
+        if contact is None:
+            # Guarded explicitly, matching the checks above. A hard-deleted
+            # contact leaves an undeliverable scheduled message; failing it here
+            # is correct, whereas passing None on makes compliance score an empty
+            # address and lets the message reach the provider.
+            raise LookupError("Scheduled message references are invalid")
         sender = self.sender_service.get(campaign.sender_id)
         self._refresh_sender_credentials(sender)
         result = ComplianceService(self.session, self.tenant_id).check_recipient(

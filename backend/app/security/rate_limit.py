@@ -3,14 +3,20 @@ from __future__ import annotations
 from dataclasses import dataclass
 from typing import Any, cast
 
-from redis import Redis
 from redis.exceptions import RedisError
+
+from app.core.redis_client import build_redis_client
 
 
 @dataclass(frozen=True)
 class RateLimitResult:
     allowed: bool
     retry_after: int
+    #: True when the decision was not an actual limit decision.  The quota
+    #: services must be able to tell "the sender is capped" apart from "the
+    #: counter store is down", because collapsing the two reports an
+    #: infrastructure outage as a 24-hour quota exhaustion.
+    unavailable: bool = False
 
 
 class RateLimitService:
@@ -27,7 +33,10 @@ class RateLimitService:
     """
 
     def __init__(self, redis_url: str, fail_open: bool = False) -> None:
-        self.redis = Redis.from_url(redis_url, decode_responses=True)
+        # This client is used by the request middleware, so its connect and read
+        # paths must be time-bounded: an unbounded connect turns a Redis outage
+        # into a full outage of the API.
+        self.redis = build_redis_client(redis_url)
         self.fail_open = fail_open
 
     def check_limit(self, key: str, limit: int, window_seconds: int) -> RateLimitResult:
@@ -42,4 +51,4 @@ class RateLimitService:
         except RedisError:
             if self.fail_open:
                 return RateLimitResult(True, 0)
-            return RateLimitResult(False, window_seconds)
+            return RateLimitResult(False, window_seconds, unavailable=True)

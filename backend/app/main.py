@@ -25,6 +25,7 @@ from app.api.conversations import router as conversations_router
 from app.api.delivery_events import router as delivery_events_router
 from app.api.domains import router as domains_router
 from app.api.drafts import router as drafts_router
+from app.api.email_accounts import router as email_accounts_router
 from app.api.google_sender_oauth import router as google_sender_oauth_router
 from app.api.imports import router as imports_router
 from app.api.inbox import router as inbox_router
@@ -43,9 +44,7 @@ from app.api.recipients import lists_router, tags_router
 from app.api.reports import router as reports_router
 from app.api.scheduler import router as scheduler_router
 from app.api.segments import router as segments_router
-from app.api.email_accounts import router as email_accounts_router
 from app.api.sender_connections import router as sender_connections_router
-from app.api.email_accounts import router as email_accounts_router
 from app.api.senders import router as senders_router
 from app.api.suppression import router as suppression_router
 from app.api.templates import router as templates_router
@@ -56,10 +55,14 @@ from app.billing import UsageLimitError
 from app.core.config import settings
 from app.core.database import initialize_database
 from app.core.logging import RequestContext, configure_logging, log_event
+from app.core.redis_client import RedisUnavailable
 from app.observability.metrics import MetricsService, NoOpMetrics, get_metrics
+from app.providers.factory import AIProviderUnavailable
 from app.security.permissions import TenantPrincipal, require_permission
 from app.security.rate_limit import RateLimitService
 from app.services.readiness import readiness
+from app.services.sender_quotas import SenderQuotaUnavailable
+from app.workers.imports import QueueUnavailable
 
 configure_logging()
 logger = logging.getLogger("crcrm.api")
@@ -198,6 +201,45 @@ def _record_request_metrics(
     metrics.record_latency("api.latency", duration_ms / 1000, route=label)
     if status >= 400:
         metrics.counter("api.errors", route=label, method=method, status_bucket=bucket)
+
+
+@app.exception_handler(AIProviderUnavailable)
+async def ai_provider_unavailable(request: Request, exc: AIProviderUnavailable) -> JSONResponse:
+    """A dependency is not configured.
+
+    Surfaced as ``503`` rather than an unhandled ``500``: the request itself was
+    valid, the deployment is misconfigured, and the operator needs the message.
+    """
+    logger.error("AI provider unavailable path=%s provider=%s", request.url.path, exc.provider_name)
+    return JSONResponse(status_code=503, content={"detail": str(exc), "code": "ai_provider_unavailable"})
+
+
+@app.exception_handler(RedisUnavailable)
+async def redis_unavailable(request: Request, exc: RedisUnavailable) -> JSONResponse:
+    """A required Redis operation failed.
+
+    Answers ``503`` immediately so a broker outage does not present to callers
+    as an opaque server fault or, worse, as a hung request.
+    """
+    logger.error("Redis unavailable path=%s: %s", request.url.path, exc)
+    return JSONResponse(status_code=503, content={"detail": str(exc), "code": "dependency_unavailable"})
+
+
+@app.exception_handler(SenderQuotaUnavailable)
+async def sender_quota_unavailable(request: Request, exc: SenderQuotaUnavailable) -> JSONResponse:
+    """Quota metering is fail-closed, so a Redis outage refuses sends.
+
+    Answering ``503`` makes the cause legible: the alternative is a 500 that
+    looks like an application bug rather than a dependency outage.
+    """
+    logger.error("Sender quota unavailable path=%s: %s", request.url.path, exc)
+    return JSONResponse(status_code=503, content={"detail": str(exc), "code": "quota_unavailable"})
+
+
+@app.exception_handler(QueueUnavailable)
+async def queue_unavailable(request: Request, exc: QueueUnavailable) -> JSONResponse:
+    logger.error("Task queue unavailable path=%s: %s", request.url.path, exc)
+    return JSONResponse(status_code=503, content={"detail": "The background queue is unavailable. Retry shortly.", "code": "queue_unavailable"})
 
 
 @app.exception_handler(UsageLimitError)

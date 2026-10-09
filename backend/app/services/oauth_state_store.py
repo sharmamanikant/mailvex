@@ -16,12 +16,14 @@ import secrets
 import threading
 from dataclasses import dataclass
 from datetime import UTC, datetime, timedelta
+from functools import lru_cache
 from typing import Any, cast
 from uuid import UUID
 
 from redis import Redis
 
 from app.core.config import settings
+from app.core.redis_client import require_redis_call
 from app.observability.metrics import get_redis
 
 __all__ = ["OAuthStateError", "OAuthStateRecord", "OAuthStateStore"]
@@ -70,7 +72,13 @@ class OAuthStateStore:
         )
         key = self._key(state)
         if self._redis is not None:
-            self._redis.set(key, json.dumps(self._encode(record)), ex=self.TTL_SECONDS)
+            # Fail closed on a Redis error, but with a typed error the API can
+            # turn into 503.  Letting the driver exception escape surfaced as an
+            # opaque 500 on the connect endpoints and told the operator nothing.
+            require_redis_call(
+                "oauth state issue",
+                lambda: self._redis.set(key, json.dumps(self._encode(record)), ex=self.TTL_SECONDS),  # type: ignore[union-attr]
+            )
         else:
             memory = self._memory
             if memory is None:
@@ -83,7 +91,9 @@ class OAuthStateStore:
         """Atomically redeem (and delete) a state. Reuse/forgery is rejected."""
         key = self._key(state)
         if self._redis is not None:
-            raw = cast(Any, self._redis.getdel(key))
+            # Same fail-closed contract as create(): a callback whose state
+            # cannot be atomically redeemed must be rejected, not waved through.
+            raw = cast(Any, require_redis_call("oauth state redeem", lambda: self._redis.getdel(key)))  # type: ignore[union-attr]
             if not raw:
                 raise OAuthStateError("Invalid or already-used OAuth state")
             try:
@@ -135,6 +145,16 @@ class OAuthStateStore:
         )
 
 
+@lru_cache(maxsize=1)
 def build_state_store() -> OAuthStateStore:
-    """Default production store: Redis (fail closed)."""
+    """Default production store: Redis (fail closed).
+
+    Cached so the default store is a process-wide singleton, matching Redis's
+    shared-namespace semantics. Callers reach for this on every ``/connect`` and
+    ``/callback`` request (``_state_store()`` builds one per call), so returning
+    a fresh instance each time meant the in-memory fallback handed out a private,
+    empty namespace per request and every issued state was rejected on
+    redemption as ``state_invalid``. Instances created explicitly are still
+    independent, which is what test isolation relies on.
+    """
     return OAuthStateStore(redis=get_redis())

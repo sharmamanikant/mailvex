@@ -22,7 +22,7 @@ Compose service.
 | `worker` | none | Celery worker. |
 | `scheduler` | none | Celery beat. Exactly one. |
 | `frontend` | none | Static SPA served by nginx. |
-| `postgres` | none | `postgres_data` volume. |
+| PostgreSQL | external | Private database host from `POSTGRES_HOST`; no PostgreSQL container is run by Compose. |
 | `redis` | none | `redis_data` volume, password required. |
 | `migrate` | none | One-shot schema bootstrap/upgrade. Exits 0, then others start. |
 | `backup` | none | Hourly dump to the `backups_data` volume. |
@@ -58,8 +58,9 @@ file, and set `RUNTIME_ENV_FILE` explicitly if you do.
 Required. Compose refuses to start if any is missing or still a placeholder:
 
 - `RUNTIME_ENV_FILE`
-- `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`
-- `DATABASE_URL` — must embed the same password as `POSTGRES_PASSWORD`
+- `POSTGRES_HOST`, `POSTGRES_DB`, `POSTGRES_USER`, `POSTGRES_PASSWORD`
+- `DATABASE_URL` — must use the app role and same password as `POSTGRES_PASSWORD`
+- `BACKUP_PGUSER`, `BACKUP_PGPASSWORD` — separate backup role; it needs read access to the app database and `CREATEDB` for restore verification
 - `REDIS_PASSWORD`
 - `JWT_SECRET`, `ENCRYPTION_KEY`
 - `ALLOWED_ORIGINS`, `ALLOWED_HOSTS`
@@ -131,13 +132,13 @@ backup -> migrate -> verify -> start procedure.
 
 ```bash
 docker compose --env-file .env.production build
-docker compose --env-file .env.production up -d
+docker compose --env-file .env.production up -d --remove-orphans
 docker compose --env-file .env.production ps
 docker compose --env-file .env.production down
 ```
 
-Never run `down -v` in production. It removes the named `postgres_data`,
-`redis_data`, and `uploads_data` volumes.
+Never run `down -v` in production. It removes the named Redis, upload, and
+backup volumes. The external PostgreSQL database is not a Compose volume.
 
 ## Verifying the origin
 
@@ -180,11 +181,11 @@ user cannot delete.
 the database and Redis passwords. Treat the backup volume as secret material:
 never commit it, never serve it.
 
-Manual dump:
+Manual dump, using the configured backup role:
 
 ```bash
-docker compose --env-file .env.production exec postgres pg_dump -U app -d crcrm > backup.sql
-docker compose --env-file .env.production exec -T postgres psql -U app -d crcrm < backup.sql
+docker compose --env-file .env.production exec backup sh -c 'pg_dump -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" --no-owner --no-privileges' > backup.sql
+docker compose --env-file .env.production exec -T backup sh -c 'PGPASSWORD="$POSTGRES_PASSWORD" psql -h "$POSTGRES_HOST" -U "$POSTGRES_USER" -d "$POSTGRES_DB"' < backup.sql
 ```
 
 Redis is password-protected, so raw `redis-cli` needs credentials:
@@ -241,6 +242,15 @@ Beat entries include `dispatch-due-scheduled-messages`,
    docker compose --env-file .env.production build
    docker compose --env-file .env.production up -d
    ```
+
+For a frontend-only release, pull the new revision and rebuild just that image:
+
+```bash
+git pull --ff-only
+export APP_BUILD_REV="$(git rev-parse --short HEAD)"
+docker compose --env-file .env.production build --pull frontend
+docker compose --env-file .env.production up -d --no-deps --force-recreate frontend
+```
 4. Verify:
    ```bash
    docker compose --env-file .env.production ps

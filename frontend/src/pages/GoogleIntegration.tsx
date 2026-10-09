@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, Cloud, CircleAlert, KeyRound, Plug, RefreshCw, ShieldCheck } from 'lucide-react'
 import { googleOAuthApi, senderConnectionsApi } from '../api/integrations'
+import { redirectTo } from '../lib/navigation'
 
 function humanStatus(status: string): string {
   return status.replace(/_/g, ' ')
@@ -37,7 +38,7 @@ export default function GoogleIntegration({ accessToken }: { accessToken: string
         throw new Error('No Google connection exists yet. Create one in Integrations first.')
       }
       const { authorization_url } = await googleOAuthApi.authorize({ connection_id: connectionId }, accessToken)
-      window.location.assign(authorization_url)
+      redirectTo(authorization_url)
     },
     onError: (reason: Error) => setError(reason.message),
   })

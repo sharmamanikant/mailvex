@@ -1,13 +1,16 @@
 from __future__ import annotations
 
+from collections.abc import Sequence
 from datetime import UTC, datetime
 from urllib.parse import urlsplit
 
 from fastapi import APIRouter, Depends, HTTPException, Request, Response, status
+from sqlalchemy import select
 from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import get_db
+from app.models import Permission, Role, RolePermission, UserRole
 from app.schemas.auth import (
     LoginRequest,
     PasswordResetConfirm,
@@ -40,8 +43,44 @@ def _require_legacy_auth() -> None:
         )
 
 
-def _user_response(principal: TenantPrincipal) -> UserResponse:
-    return UserResponse(id=principal.user_id, tenant_id=principal.tenant_id, email=principal.email, display_name=principal.display_name, roles=list(principal.roles))
+def _effective_permissions(session: Session, principal: TenantPrincipal) -> list[str]:
+    """Permission keys the caller actually holds.
+
+    Mirrors ``require_permission``: privileged roles bypass the grant table
+    entirely and are given an explicit ``*`` wildcard so the client can render
+    the same navigation the API would allow.
+
+    This is resolved only by ``/auth/me``, which the SPA calls once per session
+    restore, so the extra query never lands on the per-request hot path.
+    """
+    normalized = {role.strip().upper().replace(" ", "_") for role in principal.roles}
+    if normalized & {"ADMIN", "SUPER_ADMIN", "OWNER"}:
+        return ["*"]
+    return sorted(
+        session.scalars(
+            select(Permission.key)
+            .join(RolePermission, RolePermission.permission_id == Permission.id)
+            .join(Role, Role.id == RolePermission.role_id)
+            .join(UserRole, UserRole.role_id == Role.id)
+            .where(
+                UserRole.user_id == principal.user_id,
+                UserRole.tenant_id == principal.tenant_id,
+                (Role.tenant_id == principal.tenant_id) | (Role.tenant_id.is_(None)),
+            )
+            .distinct()
+        ).all()
+    )
+
+
+def _user_response(principal: TenantPrincipal, permissions: Sequence[str] = ()) -> UserResponse:
+    return UserResponse(
+        id=principal.user_id,
+        tenant_id=principal.tenant_id,
+        email=principal.email,
+        display_name=principal.display_name,
+        roles=list(principal.roles),
+        permissions=list(permissions),
+    )
 
 
 def _validate_origin(request: Request) -> None:
@@ -118,8 +157,8 @@ def logout(request: Request, response: Response, session: Session = Depends(get_
 
 
 @router.get("/me", response_model=UserResponse)
-def me(principal: TenantPrincipal = Depends(get_current_principal)) -> UserResponse:
-    return _user_response(principal)
+def me(principal: TenantPrincipal = Depends(get_current_principal), session: Session = Depends(get_db)) -> UserResponse:
+    return _user_response(principal, _effective_permissions(session, principal))
 
 
 @router.post("/password-reset/request")

@@ -172,3 +172,105 @@ def test_cross_tenant_token_is_rejected(auth_client) -> None:
     token, _ = TokenService(Settings(app_env="test", database_url="sqlite://", jwt_secret="development-only-change-me-32-bytes")).create_access_token(user_id, forged_tenant, ["Admin"])
     response = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
     assert response.status_code == 401
+
+
+@pytest.fixture()
+def member_client(tmp_path):
+    """A client with a non-privileged Member role that has explicit grants.
+
+    The ``Admin`` user in ``auth_client`` short-circuits permission resolution,
+    so permission-aware behaviour needs a caller who is *not* privileged.
+    """
+    engine = create_engine(f"sqlite:///{tmp_path / 'member.db'}", connect_args={"check_same_thread": False})
+    Base.metadata.create_all(engine)
+    session_factory = sessionmaker(bind=engine, expire_on_commit=False)
+    session = session_factory()
+    tenant = Tenant(name="Acme", slug=f"acme-{uuid4().hex[:8]}")
+    other_tenant = Tenant(name="Other", slug=f"other-{uuid4().hex[:8]}")
+    session.add_all([tenant, other_tenant])
+    session.flush()
+    user = User(tenant_id=tenant.id, email="member@example.com", password_hash=hash_password("correct horse battery staple"), display_name="Member")
+    role = Role(tenant_id=tenant.id, name="Member")
+    granted = Permission(key="contacts.read", description="Read contacts")
+    other = Permission(key="settings.manage", description="Manage settings")
+    # A second tenant that grants the same user a privileged role. It must not
+    # influence what this tenant reports or allows.
+    foreign_role = Role(tenant_id=other_tenant.id, name="ForeignAdmin")
+    session.add_all([user, role, granted, other, foreign_role])
+    session.flush()
+    session.add_all(
+        [
+            UserRole(tenant_id=tenant.id, user_id=user.id, role_id=role.id),
+            RolePermission(role_id=role.id, permission_id=granted.id),
+            UserRole(tenant_id=other_tenant.id, user_id=user.id, role_id=foreign_role.id),
+            RolePermission(role_id=foreign_role.id, permission_id=other.id),
+        ]
+    )
+    session.commit()
+    session.close()
+
+    def override_db():
+        db = session_factory()
+        try:
+            yield db
+        finally:
+            db.close()
+
+    app.dependency_overrides[get_db] = override_db
+    client = TestClient(app)
+    yield client, tenant.id, user.id
+    app.dependency_overrides.clear()
+    engine.dispose()
+
+
+def _bearer(client, email: str) -> str:
+    response = client.post("/api/v1/auth/login", json={"email": email, "password": "correct horse battery staple"})
+    assert response.status_code == 200, response.text
+    return response.json()["access_token"]
+
+
+def test_me_reports_granted_permissions_for_non_privileged_roles(member_client) -> None:
+    client, tenant_id, user_id = member_client
+    token = _bearer(client, "member@example.com")
+    me = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"})
+
+    assert me.status_code == 200
+    body = me.json()
+    assert body["id"] == str(user_id)
+    assert body["tenant_id"] == str(tenant_id)
+    assert body["permissions"] == ["contacts.read"]
+
+
+def test_reported_permissions_match_what_the_api_actually_allows(member_client) -> None:
+    """The client uses this list to hide navigation, so it must not over-report."""
+    client, _, _ = member_client
+    token = _bearer(client, "member@example.com")
+    headers = {"Authorization": f"Bearer {token}"}
+    reported = set(client.get("/api/v1/auth/me", headers=headers).json()["permissions"])
+
+    # contacts.read is granted and usable.
+    assert "contacts.read" in reported
+    assert client.get("/api/v1/contacts", headers=headers).status_code == 200
+
+    # settings.manage is not granted, so it must be absent and stay forbidden.
+    assert "settings.manage" not in reported
+    assert client.get("/api/v1/admin/permissions", headers=headers).status_code == 403
+
+
+def test_privileged_roles_receive_the_wildcard_grant(auth_client) -> None:
+    client, _, _ = auth_client
+    token = _bearer(client, "owner@example.com")
+    body = client.get("/api/v1/auth/me", headers={"Authorization": f"Bearer {token}"}).json()
+
+    assert body["roles"] == ["Admin"]
+    assert body["permissions"] == ["*"]
+
+
+def test_permissions_do_not_leak_across_tenants(member_client) -> None:
+    """A grant held through another tenant's role must never be reported."""
+    client, _, _ = member_client
+    token = _bearer(client, "member@example.com")
+    headers = {"Authorization": f"Bearer {token}"}
+
+    assert "settings.manage" not in client.get("/api/v1/auth/me", headers=headers).json()["permissions"]
+    assert client.get("/api/v1/admin/permissions", headers=headers).status_code == 403

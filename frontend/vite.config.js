@@ -9,6 +9,8 @@ export default defineConfig({
         },
         proxy: {
             '/api': 'http://localhost:8000',
+            // The shell polls /health/ready to show system status.
+            '/health': 'http://localhost:8000',
         },
     },
 });

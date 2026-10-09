@@ -52,12 +52,12 @@ placeholders in:
 | Variable | Requires real value    | Notes                                                     |
 | -------- | ---------------------- | --------------------------------------------------------- |
 | `DATABASE_URL` | Yes           | Postgres DSN (psycopg). Startup fails if unset.           |
-| `REDIS_URL`    | Yes           | Redis DSN.                                                |
+| `REDIS_URL`    | derived     | Built by compose from `REDIS_PASSWORD`; do not set it in the env file. |
 | `JWT_SECRET`   | Yes           | ≥ 32 bytes; startup fails if unset/weak.                  |
 | `ENCRYPTION_KEY`| Yes          | ≥ 32 bytes; used for stored-provider-credential encryption. |
 | `GOOGLE_CLIENT_ID/SECRET`, `MICROSOFT_CLIENT_ID/SECRET` | production client credentials | leave blank if provider disabled. |
 | `GOOGLE/MICROSOFT_REDIRECT_URI` | Yes (HTTPS origin) | must match the OAuth app registration. |
-| `AI_PROVIDER` + provider key | per provider | use `mock` unless metered AI is configured with a budget/limit. |
+| `AI_PROVIDER` | per provider | Only `mock` ships in this repo. Any other value returns `503 AIProviderUnavailable`; it is not a working integration. |
 | `TRANSACTIONAL_SMTP_*` | Yes for email sends | secured relay only; `SMTP_ALLOW_PRIVATE/PLAINTEXT/INSECURE` stay `false` in prod. |
 | `ALLOWED_ORIGINS` / `ALLOWED_HOSTS` | Yes | restrict to the real public origin + proxy host; startup fails if unset. |
 | `PUBLIC_BASE_URL`, `PASSWORD_RESET_URL` | Yes | HTTPS URLs.                                               |
@@ -89,7 +89,7 @@ Required procedure (in order):
 3. **Verify** — confirm the applied revision is the expected head and the
    readiness probe reports `migrations: ready`:
    ```bash
-   docker compose --env-file .env.production exec postgres psql -U app -d crcrm -c "select version_num from alembic_version"
+   docker compose --env-file .env.production run --rm migrate alembic current
    curl -fsS http://127.0.0.1:8000/health/ready
    ```
 4. **Application startup** — only after verify passes, start (or upgrade) the
@@ -140,7 +140,7 @@ must be detected at the gate rather than in production data.
   is the deliberate exception (it writes the `backups_data` volume).
   Nginx workers already drop to the `nginx` user; see section 5 for edge-HTTPS
   notes.
-- **Health checks**: every long-running service (`postgres`, `redis`, backend,
+- **Health checks**: every long-running Compose service (`redis`, backend,
   worker, scheduler, frontend, nginx) declares a healthcheck; the API exposes
   `/health`, `/health/live`, `/health/ready`, `/health/details`.
 - **Immutable, predictable images**: builds are deterministic from Dockerfiles;
@@ -205,7 +205,7 @@ restart** policies in `docker-compose.yml`:
 
 | Service | Role                          | Restart | Wait-on                  |
 | ------- | ----------------------------- | ------- | ------------------------ |
-| `migrate` | one-shot Alembic upgrade    | `no`    | postgres/redis healthy   |
+| `migrate` | one-shot Alembic upgrade    | `no`    | external PostgreSQL reachable + Redis healthy |
 | `backend` | HTTP API (uvicorn, `${UVICORN_WORKERS:-2}` workers) | always | migrate completed + deps healthy |
 | `worker`  | Celery worker (`${CELERY_WORKER_CONCURRENCY:-2}`) | always | migrate completed + deps healthy |
 | `scheduler` | Celery beat               | always  | migrate completed + deps healthy |
@@ -261,9 +261,15 @@ unwanted** migration step:
 
 1. **Restore from backup** (there is always a verified pre-change dump):
    ```bash
-   docker compose --env-file .env.production \
-     exec backup sh /scripts/restore.sh /backups/crcrm-db-<pre-change>".sql.gz
+   # Stop writers first so nothing commits against the database mid-restore.
+   docker compose --env-file .env.production stop backend worker scheduler
+   docker compose --profile restore --env-file .env.production \
+     run --rm restore /backups/crcrm-db-<pre-change>".sql.gz
+   docker compose --env-file .env.production up -d backend worker scheduler
    ```
+   Use the `restore` profile service, **not** `exec backup`. The backup sidecar
+   mounts `uploads_data` read-only so a backup job can never mutate live files;
+   only the `restore` service mounts it read-write.
 2. Or, for a reversible step, run the downgrade for that single revision:
    ```bash
    docker compose --env-file .env.production \

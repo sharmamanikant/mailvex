@@ -9,7 +9,7 @@ from .base import (
     ProviderThread,
     SenderUnavailableError,
 )
-from .factory import build_ai_provider
+from .factory import AIProviderUnavailable, build_ai_provider
 from .gmail import GmailProvider
 from .microsoft import MicrosoftGraphProvider
 from .mock import MockEmailProvider
@@ -20,6 +20,7 @@ __all__ = [
     "AIGenerationRequest",
     "AIGenerationResult",
     "AIProviderInterface",
+    "AIProviderUnavailable",
     "EmailProviderInterface",
     "GmailProvider",
     "MicrosoftGraphProvider",

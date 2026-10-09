@@ -3,6 +3,7 @@ import { useState } from 'react'
 import { Link, useSearchParams } from 'react-router-dom'
 import { ArrowLeft, CheckCircle2, Cloud, CircleAlert, KeyRound, Plug, RefreshCw, ShieldCheck } from 'lucide-react'
 import { microsoftOAuthApi, senderConnectionsApi } from '../api/integrations'
+import { redirectTo } from '../lib/navigation'
 
 function humanStatus(status: string): string {
   return status.replace(/_/g, ' ')
@@ -37,7 +38,7 @@ export default function MicrosoftIntegration({ accessToken }: { accessToken: str
         throw new Error('No Microsoft connection exists yet. Create one in Integrations first.')
       }
       const { authorization_url } = await microsoftOAuthApi.authorize({ connection_id: connectionId }, accessToken)
-      window.location.assign(authorization_url)
+      redirectTo(authorization_url)
     },
     onError: (reason: Error) => setError(reason.message),
   })

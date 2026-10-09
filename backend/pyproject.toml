@@ -1,5 +1,6 @@
 [tool.ruff]
 target-version = "py312"
+exclude = ["_phase8_probe.py", "_phase8_dedupe.py"]
 
 [tool.ruff.lint]
 select = ["E", "F", "I", "B", "UP", "RUF", "PERF"]
@@ -9,3 +10,16 @@ ignore = ["B008", "E501"]
 python_version = "3.12"
 strict = true
 ignore_missing_imports = true
+
+[tool.pytest.ini_options]
+# Previously absent, which made the suite non-hermetic: it only worked when
+# invoked from inside `backend/`, it inherited the ambient APP_ENV, and it had
+# no timeout, so a single blocked test could hang a run indefinitely.
+minversion = "8.0"
+testpaths = ["tests"]
+pythonpath = ["."]
+addopts = "-ra --strict-markers --strict-config"
+# A hung test means an unbounded wait, not a slow test. The suite must fail
+# loudly rather than stall CI or a developer machine.
+timeout = 300
+filterwarnings = ["ignore::DeprecationWarning"]

@@ -4,6 +4,7 @@ export type User = {
   email: string
   display_name: string
   roles: string[]
+  permissions: string[]
 }
 
 export type TokenResponse = {

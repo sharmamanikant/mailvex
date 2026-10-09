@@ -227,8 +227,8 @@ docker compose --env-file .env.production logs migrate
 
 ```bash
 docker compose --env-file .env.production build
-docker compose --env-file .env.production up -d postgres redis
-docker compose --env-file .env.production run --rm backend alembic upgrade head
+docker compose --env-file .env.production up -d redis backup
+docker compose --env-file .env.production run --rm migrate
 docker compose --env-file .env.production up -d
 ```
 
@@ -242,19 +242,17 @@ docker compose --env-file .env.production ps
 
 # 2. Schema at head.
 docker compose --env-file .env.production exec backend alembic current
-docker compose --env-file .env.production exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c "\d verification_jobs"
+docker compose --env-file .env.production exec backup sh -c 'psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -c "\d verification_jobs"'
 
 # 3. Backfill is UNKNOWN, never INVALID.
-docker compose --env-file .env.production exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
-  "select verification_status, count(*) from contacts group by 1;"
+docker compose --env-file .env.production exec backup sh -c 'psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -c "select verification_status, count(*) from contacts group by 1;"'
 
 # 4. Celery tasks registered (18 expected).
 docker compose --env-file .env.production exec backend python -c \
   "from app.tasks.scheduler import celery_app; print(len([t for t in celery_app.tasks if t.startswith('crcrm.')]))"
 
 # 5. Rulebook seeded (33 domain / 29 local on a clean database).
-docker compose --env-file .env.production exec postgres psql -U "$POSTGRES_USER" -d "$POSTGRES_DB" -c \
-  "select category, count(*) from validation_domain_rules group by 1 order by 1;"
+docker compose --env-file .env.production exec backup sh -c 'psql -h "$PGHOST" -U "$PGUSER" -d "$PGDATABASE" -c "select category, count(*) from validation_domain_rules group by 1 order by 1;"'
 
 # 6. Edge reachable.
 curl -fsS https://<host>/health

@@ -5,8 +5,8 @@
 # https://mailvex.in to http://127.0.0.1:8080, which is the nginx origin below.
 #
 # Consequences of that topology, all deliberate:
-#   - No service publishes a port on the LAN. Postgres and Redis are reachable
-#     only on the internal Docker network.
+#   - PostgreSQL is on the private database host configured by POSTGRES_HOST;
+#     Redis is reachable only on the internal Docker network.
 #   - The single published port is bound to 127.0.0.1, so nginx is unreachable
 #     from other machines on 192.168.0.0/24.
 #   - TLS terminates at Cloudflare. nginx speaks plain HTTP on loopback.
@@ -21,26 +21,6 @@
 name: crcrm
 
 services:
-  postgres:
-    image: postgres:16-alpine
-    restart: unless-stopped
-    environment:
-      POSTGRES_DB: ${POSTGRES_DB:-crcrm}
-      POSTGRES_USER: ${POSTGRES_USER:-app}
-      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the environment file}
-    volumes:
-      - postgres_data:/var/lib/postgresql/data
-    healthcheck:
-      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-app} -d ${POSTGRES_DB:-crcrm}"]
-      interval: 15s
-      timeout: 5s
-      retries: 10
-      start_period: 20s
-    networks: [crcrm-net]
-    deploy:
-      resources:
-        limits: { cpus: '1.0', memory: 512M }
-
   redis:
     image: redis:7-alpine
     restart: unless-stopped
@@ -52,7 +32,28 @@ services:
       # closed in production. No port is published either, so this is
       # defence in depth for a container-only network.
       REDIS_PASSWORD: ${REDIS_PASSWORD:?Set REDIS_PASSWORD in the environment file}
-    command: ["redis-server", "--appendonly", "yes", "--requirepass", "${REDIS_PASSWORD}"]
+    # noeviction, not allkeys-lru. Redis holds three classes of data here:
+    #   - the Celery broker (queued send jobs)
+    #   - the Celery result backend
+    #   - rate-limit counters, warmup advisory locks, sender daily quotas
+    # Evicting a key means losing queued send work or resetting a quota counter,
+    # both of which fail silently while the campaign still reports as queued.
+    # noeviction makes a full instance fail loudly (503) instead.
+    #
+    # maxmemory is set below the container limit on purpose: Redis starts
+    # returning OOM errors at REDIS_MAXMEMORY while it still has headroom to
+    # serve reads and release memory, rather than being OOM-killed by the kernel
+    # and restart-looping. Keep REDIS_MAXMEMORY below the memory limit below.
+    command:
+      - redis-server
+      - --appendonly
+      - "yes"
+      - --requirepass
+      - ${REDIS_PASSWORD}
+      - --maxmemory
+      - ${REDIS_MAXMEMORY:-192mb}
+      - --maxmemory-policy
+      - noeviction
     volumes:
       - redis_data:/data
     healthcheck:
@@ -64,7 +65,7 @@ services:
     networks: [crcrm-net]
     deploy:
       resources:
-        limits: { cpus: '0.5', memory: 256M }
+        limits: { cpus: '0.5', memory: "${REDIS_MEMORY_LIMIT:-256M}" }
 
   # One-shot schema migration. backend/worker/scheduler wait for it to exit 0,
   # so the application never starts against a stale schema.
@@ -85,8 +86,6 @@ services:
     # see backend/app/db_bootstrap.py.
     command: ["python", "-m", "app.db_bootstrap"]
     depends_on:
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     networks: [crcrm-net]
@@ -115,8 +114,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
@@ -151,8 +148,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
@@ -188,8 +183,6 @@ services:
     depends_on:
       migrate:
         condition: service_completed_successfully
-      postgres:
-        condition: service_healthy
       redis:
         condition: service_healthy
     healthcheck:
@@ -207,6 +200,8 @@ services:
     build:
       context: ./frontend
       dockerfile: docker/Dockerfile
+      args:
+        APP_BUILD_REV: ${APP_BUILD_REV:-local}
     restart: unless-stopped
     depends_on:
       backend:
@@ -251,11 +246,11 @@ services:
       dockerfile: infrastructure/backup/Dockerfile
     restart: unless-stopped
     environment:
-      PGHOST: postgres
+      PGHOST: ${POSTGRES_HOST:?Set POSTGRES_HOST in the environment file}
       PGPORT: 5432
-      PGUSER: ${POSTGRES_USER:-app}
-      PGPASSWORD: ${POSTGRES_PASSWORD}
-      PGDATABASE: ${POSTGRES_DB:-crcrm}
+      PGUSER: ${BACKUP_PGUSER:?Set BACKUP_PGUSER in the environment file}
+      PGPASSWORD: ${BACKUP_PGPASSWORD:?Set BACKUP_PGPASSWORD in the environment file}
+      PGDATABASE: ${POSTGRES_DB:?Set POSTGRES_DB in the environment file}
       BACKUP_DIR: /backups
       BACKUP_INTERVAL_SECONDS: ${BACKUP_INTERVAL_SECONDS:-3600}
       DB_RETENTION_DAYS: ${DB_RETENTION_DAYS:-14}
@@ -276,13 +271,40 @@ services:
         #   docker compose --env-file .env.production cp backup:/backups/<file> ./
         - backups_data:/backups
         - ${RUNTIME_ENV_FILE:?Set RUNTIME_ENV_FILE in the environment file}:/run/config/runtime.env:ro
-    depends_on:
-      postgres:
-        condition: service_healthy
+    networks: [crcrm-net]
+
+  # One-shot disaster recovery. Deliberately NOT the `backup` service: that one
+  # mounts uploads_data read-only so a compromised or buggy backup job can never
+  # mutate live files. Restoring needs write access, so it gets its own service
+  # that exists only under the `restore` profile.
+  #
+  #   docker compose --profile restore --env-file .env.production \\
+  #     run --rm restore
+  restore:
+    build:
+      context: .
+      dockerfile: infrastructure/backup/Dockerfile
+    profiles: ["restore"]
+    restart: "no"
+    environment:
+      PGHOST: ${POSTGRES_HOST:?Set POSTGRES_HOST in the environment file}
+      PGPORT: 5432
+      PGUSER: ${BACKUP_PGUSER:?Set BACKUP_PGUSER in the environment file}
+      PGPASSWORD: ${BACKUP_PGPASSWORD:?Set BACKUP_PGPASSWORD in the environment file}
+      PGDATABASE: ${POSTGRES_DB:?Set POSTGRES_DB in the environment file}
+      APP_PGUSER: ${POSTGRES_USER:?Set POSTGRES_USER in the environment file}
+      APP_PGPASSWORD: ${POSTGRES_PASSWORD:?Set POSTGRES_PASSWORD in the environment file}
+      BACKUP_DIR: /backups
+      STORAGE_DEST: /app/.local_uploads
+      CONFIG_FILE: /run/config/runtime.env
+    volumes:
+      # Read-write: this is the one place that legitimately writes the filestore.
+      - uploads_data:/app/.local_uploads
+      - backups_data:/backups:ro
+      - ${RUNTIME_ENV_FILE:?Set RUNTIME_ENV_FILE in the environment file}:/run/config/runtime.env:ro
     networks: [crcrm-net]
 
 volumes:
-  postgres_data:
   redis_data:
   # Uploaded import CSVs and error reports. Shared by backend/worker/scheduler
   # so files survive a container recreate, and read by backup for capture.

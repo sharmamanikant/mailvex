@@ -187,9 +187,11 @@ function SenderRow({ sender, accessToken, onNotice }: { sender: SenderAccount; a
         <span className={`sender-status sender-${statusTone(sender.status)}`}><i /> {humanStatus(sender.status)}</span>
       </td>
       <td>
-        <span className={sender.health_status === 'HEALTHY' ? 'health-ok' : 'health-warning'}>
-          {sender.health_status ? humanStatus(sender.health_status) : 'UNKNOWN'}
-        </span>
+        <Link className="row-link" to={`/senders/${sender.id}/health`}>
+          <span className={sender.health_status === 'HEALTHY' ? 'health-ok' : 'health-warning'}>
+            {sender.health_status ? humanStatus(sender.health_status) : 'UNKNOWN'}
+          </span>
+        </Link>
       </td>
       <td>{sender.last_used_at ? new Date(sender.last_used_at).toLocaleDateString() : 'Never'}</td>
       <td>

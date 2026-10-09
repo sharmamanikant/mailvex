@@ -102,6 +102,23 @@ A separate `verify_backup.sh` can re-verify any archived dump on demand:
 docker compose --env-file .env.production exec backup sh /scripts/verify_backup.sh /backups/crcrm-db-<stamp>.sql.gz
 ```
 
+A successful restore alone is not treated as proof of a usable backup. The
+script also fails (exit `1`) when:
+
+- any required table (`tenants`, `users`, `role_permissions`, `import_jobs`,
+  `campaigns`, `scheduled_messages`, `delivery_jobs`) is missing from the dump;
+- `tenants` or `users` restored empty — a dump with no accounts cannot restore
+  a working system;
+- `alembic_version` is absent, meaning the dump carries no migration state.
+
+Tables that are legitimately empty on a young install are printed but do not
+fail the run. Wire this into monitoring: a non-zero exit must page someone,
+because the next dump produced from a broken pipeline will also be unusable.
+
+> The script reports the recorded `alembic_version` but cannot compare it to a
+> target head — the backup image does not contain the migration chain. Compare
+> it manually against the deployment's head before promoting a dump.
+
 ---
 
 ## 6. Restore procedure (runbook)
@@ -111,7 +128,7 @@ The recommended flow for a database failure:
 ```
 Database failure
    ↓
-Provision PostgreSQL (start a clean postgres service)
+Provision a fresh database on the external PostgreSQL host
    ↓
 Restore the latest backup dump into a fresh database
    ↓
@@ -129,18 +146,31 @@ Verify readiness (health endpoint + spot-check query)
 ### 6.1 Restore the database
 
 ```sh
-# From a host with the backup dir mounted:
-docker compose --env-file .env.production exec backup sh /scripts/restore.sh /backups/crcrm-db-<stamp>.sql.gz
+# Stop writers first so nothing commits against the database mid-restore.
+docker compose --env-file .env.production stop backend worker scheduler
+
+docker compose --profile restore --env-file .env.production \
+  run --rm restore /backups/crcrm-db-<stamp>.sql.gz
 ```
 
-`restore.sh` will re-create `PGDATABASE`, load the dump, and report migration
-state plus row counts for integrity validation.
+> **Use the `restore` profile service, not `exec backup`.** The long-running
+> `backup` sidecar mounts `uploads_data` **read-only** so a backup job can never
+> mutate live files. Only the `restore` service mounts it read-write, which is
+> what a filestore restore needs. Running `restore.sh` from `backup` now fails
+> fast with an explicit message instead of a `tar` error halfway through.
+
+`restore.sh` recreates `PGDATABASE`, loads the dump, and reports migration
+state plus row counts. Because the backup and app roles are separate, the
+script first checks that the configured backup role is authorized to recreate
+a database owned by the app role. If that check fails, it exits before
+dropping anything; have the database administrator perform or explicitly
+authorize the ownership change for the restore.
 
 ### 6.2 Bring the stack back online
 
 ```sh
 docker compose --env-file .env.production up -d \
-  postgres redis backend worker scheduler frontend nginx
+  redis backend worker scheduler frontend nginx
 ```
 
 ### 6.3 Verify readiness
@@ -148,18 +178,32 @@ docker compose --env-file .env.production up -d \
 ```sh
 curl -fsS http://127.0.0.1:8000/health          # expect 200/OK
 docker compose --env-file .env.production ps                                 # all services healthy
-PGPASSWORD="$PGPASSWORD" psql -d crcrm -tAc 'SELECT count(*) FROM contacts'
+docker compose --env-file .env.production exec backend \
+  python -c "import sqlalchemy as sa; e=sa.create_engine('\$DATABASE_URL'); \
+  print(sa.text('SELECT count(*) FROM contacts').scalar(e.connect()))"
 ```
 
 A successful health check plus a spot-check query confirms the application is
 serving from the restored database.
 
-### 6.4 Restore uploaded files (if not already on the recovered volume)
+### 6.4 Restore uploaded files
+
+The filestore restore is part of the same `restore` service run above. Point
+`STORAGE_RESTORE` at a directory of `*.tar.gz` filestore snapshots and
+`STORAGE_DEST` defaults to `/app/.local_uploads`, which the `restore` service
+mounts read-write:
 
 ```sh
-docker compose --env-file .env.production exec backup sh /scripts/restore.sh   # DB only
-# or point STORAGE_RESTORE at the filestore staging dir and run the
-# full restore.sh which unpacks any *.tar.gz into STORAGE_DEST.
+docker compose --profile restore --env-file .env.production \
+  run -e STORAGE_RESTORE=/backups/filestore \
+  --rm restore /backups/crcrm-db-<stamp>.sql.gz
+```
+
+Verify afterwards that import CSVs and error reports are present:
+
+```sh
+docker compose --env-file .env.production exec backend \
+  sh -c 'ls -1 /app/.local_uploads | head'
 ```
 
 ---
@@ -214,10 +258,10 @@ dumps.
 | `infrastructure/backup/backup.sh`                 | Orchestrates DB + files + config   |
 | `infrastructure/backup/pg_backup.sh`              | PostgreSQL dump + verify + rotate  |
 | `infrastructure/backup/verify_backup.sh`          | On-demand backup verification      |
-| `infrastructure/backup/restore.sh`                | Full database/filestore restore    |
+| `infrastructure/backup/restore.sh`                | Full database/filestore restore (requires a read-write filestore mount) |
 | `infrastructure/backup/Dockerfile`                | Backup sidecar image               |
 | `infrastructure/backup/backup.env.example`        | Backup configuration template      |
-| `docker-compose.yml`                         | Adds the `backup` sidecar service  |
+| `docker-compose.yml`                         | `backup` sidecar and `restore` profile services |
 | `backend/app/services/storage_retention.py`       | In-app uploaded-file retention     |
 | `backend/app/tasks/scheduler.py`                  | Registers the retention sweep task |
 | `docs/operations/restore-test-results.md`         | Restore test log                   |

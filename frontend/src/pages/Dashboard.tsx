@@ -1,4 +1,4 @@
-import { BarChart3, Bell, ChevronDown, CircleHelp, FileSpreadsheet, FileText, Globe, History, LayoutDashboard, Link2, List, LogOut, Mail, Menu, Plug, Plus, Search, Settings, ShieldCheck, Sparkles, Target, Users, X } from 'lucide-react'
+import { Activity, BarChart3, Bell, ChevronDown, CircleHelp, FileSpreadsheet, FileText, Globe, LayoutDashboard, Link2, List, LogOut, Mail, Menu, Plug, Plus, Search, Settings, ShieldCheck, Sparkles, Target, Users, X, Inbox, Tags, UserRoundSearch, Ban, SlidersHorizontal, ScrollText, CreditCard, MessagesSquare } from 'lucide-react'
 import { useEffect, useState } from 'react'
 import type { ReactNode } from 'react'
 import { Link, useLocation } from 'react-router-dom'
@@ -9,17 +9,13 @@ type NavItem = { label: string; icon: typeof LayoutDashboard; permission?: strin
 
 const navGroups: { label: string; items: NavItem[] }[] = [
   { label: 'Dashboard', items: [{ label: 'Dashboard', icon: LayoutDashboard, permission: 'analytics.read', path: '/dashboard' }] },
-  { label: 'Contacts', items: [{ label: 'All Contacts', icon: Users, permission: 'contacts.read', path: '/contacts' }, { label: 'Lists', icon: List, permission: 'contacts.read', path: '/contact-lists' }, { label: 'Segments', icon: Target, permission: 'contacts.read', path: '/segments' }, { label: 'Import', icon: FileSpreadsheet, permission: 'contacts.create', path: '/contacts/import' }] },
-  { label: 'Campaigns', items: [{ label: 'All Campaigns', icon: Mail, permission: 'campaigns.read', path: '/campaigns' }, { label: 'Create Campaign', icon: Plus, permission: 'campaigns.create', path: '/campaigns/new' }, { label: 'Templates', icon: FileText, permission: 'templates.read', path: '/templates' }] },
-  { label: 'AI Studio', items: [{ label: 'Message Studio', icon: Sparkles, permission: 'templates.create', path: '/ai/message-studio' }, { label: 'AI History', icon: History, permission: 'templates.read', path: '/inbox' }] },
-  { label: 'Senders', items: [{ label: 'Email Accounts', icon: ShieldCheck, permission: 'senders.read', path: '/senders' }, { label: 'Domains', icon: Globe, permission: 'senders.read', path: '/domains' }, { label: 'Sender Health', icon: ShieldCheck, permission: 'senders.read', path: '/senders' }] },
-  { label: 'Reports', items: [{ label: 'Overview', icon: BarChart3, permission: 'analytics.read', path: '/reports' }, { label: 'Campaign Reports', icon: BarChart3, permission: 'analytics.read', path: '/reports' }, { label: 'Engagement', icon: BarChart3, permission: 'analytics.read', path: '/reports' }] },
-  { label: 'Workspace Management', items: [{ label: 'Integrations', icon: Plug, permission: 'integrations.read', path: '/integrations' }, { label: 'Email Providers', icon: Link2, permission: 'integrations.read', path: '/settings/email-providers' }, { label: 'Workspace Mailboxes', icon: Mail, permission: 'integrations.read', path: '/settings/email-providers/mailboxes' }, { label: 'Senders', icon: ShieldCheck, permission: 'integrations.read', path: '/senders/workspace' }, { label: 'Sending Policies', icon: ShieldCheck, permission: 'campaigns.read', path: '/policies' }, { label: 'Workspace Admin', icon: Settings, permission: 'settings.manage', path: '/admin' }, { label: 'Audit Log', icon: FileText, permission: 'audit.read', path: '/admin' }, { label: 'Platform Owner', icon: ShieldCheck, permission: 'platform.admin', path: '/platform-admin' }] },
-]
-
-const platformNavGroups: { label: string; items: NavItem[] }[] = [
-  { label: 'Platform', items: [{ label: 'Platform Owner', icon: ShieldCheck, permission: 'platform.admin', path: '/platform-admin' }] },
-  { label: 'Workspace Management', items: [{ label: 'Workspace Admin', icon: Settings, permission: 'platform.admin', path: '/admin' }, { label: 'Audit Log', icon: FileText, permission: 'platform.admin', path: '/admin' }] },
+  { label: 'Contacts', items: [{ label: 'All Contacts', icon: Users, path: '/contacts' }, { label: 'Lists', icon: List, path: '/contact-lists' }, { label: 'Segments', icon: Target, path: '/segments' }, { label: 'Tags', icon: Tags, path: '/tags' }, { label: 'Custom Fields', icon: SlidersHorizontal, path: '/custom-fields' }, { label: 'Import', icon: FileSpreadsheet, path: '/contacts/import' }, { label: 'Duplicates', icon: UserRoundSearch, path: '/duplicates' }, { label: 'Suppression', icon: Ban, path: '/suppression' }] },
+  { label: 'Campaigns', items: [{ label: 'All Campaigns', icon: Mail, path: '/campaigns' }, { label: 'Create Campaign', icon: Plus, path: '/campaigns/new' }, { label: 'Templates', icon: FileText, path: '/templates' }] },
+  { label: 'AI Studio', items: [{ label: 'Message Studio', icon: Sparkles, path: '/ai/message-studio' }] },
+  { label: 'Inbox', items: [{ label: 'Unified Inbox', icon: Inbox, path: '/inbox' }, { label: 'Conversations', icon: MessagesSquare, path: '/conversations' }] },
+  { label: 'Senders', items: [{ label: 'Email Accounts', icon: ShieldCheck, path: '/senders' }, { label: 'Domains', icon: Globe, path: '/domains' }] },
+  { label: 'Reports', items: [{ label: 'Reports', icon: BarChart3, path: '/reports' }, { label: 'Usage & Billing', icon: CreditCard, path: '/usage' }] },
+  { label: 'Workspace Management', items: [{ label: 'Integrations', icon: Plug, path: '/integrations' }, { label: 'Email Providers', icon: Link2, path: '/settings/email-providers' }, { label: 'Workspace Mailboxes', icon: Mail, path: '/settings/email-providers/mailboxes' }, { label: 'Workspace Senders', icon: ShieldCheck, path: '/senders/workspace' }, { label: 'Sending Policies', icon: ShieldCheck, path: '/policies' }, { label: 'Compliance Center', icon: ScrollText, path: '/compliance' }, { label: 'Workspace Admin', icon: Settings, permission: 'settings.manage', path: '/admin' }, { label: 'Operations', icon: Activity, permission: 'settings.manage', path: '/ops' }, { label: 'Platform Owner', icon: ShieldCheck, permission: 'platform.admin', path: '/platform-admin' }] },
 ]
 
 export default function Dashboard({ user, onLogout, children }: Props) {
@@ -27,14 +23,26 @@ export default function Dashboard({ user, onLogout, children }: Props) {
   const [systemReady, setSystemReady] = useState<boolean | null>(null)
   const location = useLocation()
   useEffect(() => { let active = true; fetch('/health/ready').then((response) => { if (active) setSystemReady(response.ok) }).catch(() => { if (active) setSystemReady(false) }); return () => { active = false } }, [])
-  const isPlatformOwner = user.roles.some((role) => role.trim().toUpperCase().replace(' ', '_') === 'SUPER_ADMIN')
-  const hasPermission = (permission?: string) => permission === 'platform.admin' ? isPlatformOwner : !permission || user.roles.some((role) => ['Admin', 'Super Admin', 'Owner'].includes(role)) || permission === 'analytics.read'
-  const visibleNavGroups = isPlatformOwner ? platformNavGroups : navGroups
+const normalizedRoles = new Set(user.roles.map((role) => role.trim().toUpperCase().replaceAll(' ', '_')))
+  const isPlatformOwner = normalizedRoles.has('SUPER_ADMIN')
+  // Mirrors the backend guards. `/auth/me` also returns a "*" wildcard for
+  // privileged roles, but honouring them locally keeps navigation correct
+  // before (or without) that permission list, instead of hiding admin tooling.
+  const isPrivileged = ['ADMIN', 'SUPER_ADMIN', 'OWNER'].some((role) => normalizedRoles.has(role))
+  const granted = new Set(user.permissions ?? [])
+  const hasPermission = (permission?: string) => {
+    if (!permission) return true
+    if (permission === 'platform.admin') return isPlatformOwner
+    return isPrivileged || granted.has('*') || granted.has(permission)
+  }
+  const visibleNavGroups = navGroups
+    .map((group) => ({ ...group, items: group.items.filter(({ permission }) => hasPermission(permission)) }))
+    .filter((group) => group.items.length)
   return <div className="app-shell">
     <aside className={`sidebar ${sidebarOpen ? 'sidebar-open' : ''}`}>
       <div className="sidebar-top"><Link className="brand-lockup" to="/dashboard"><span className="brand-mark">+</span><span>CR<span className="brand-accent">+</span>CRM</span></Link><button className="icon-button mobile-close" onClick={() => setSidebarOpen(false)} aria-label="Close menu"><X size={18} /></button></div>
       <div className="workspace-switcher"><span className="workspace-avatar">{user.display_name.charAt(0).toUpperCase()}</span><span><small>WORKSPACE</small><strong>Current workspace</strong></span><ChevronDown size={15} /></div>
-      <nav>{visibleNavGroups.map((group) => <div className="nav-group" key={group.label}><p className="nav-label">{group.label}</p>{group.items.map(({ label, icon: Icon, permission, path }) => hasPermission(permission) && <Link className={`nav-item ${location.pathname === path ? 'active' : ''}`} key={`${group.label}-${label}`} to={path}><Icon size={16} /><span>{label}</span></Link>)}</div>)}</nav>
+      <nav>{visibleNavGroups.map((group) => { const items = group.items.filter(({ permission }) => hasPermission(permission)); return items.length ? <div className="nav-group" key={group.label}><p className="nav-label">{group.label}</p>{items.map(({ label, icon: Icon, path }) => <Link className={`nav-item ${location.pathname === path || (path !== '/dashboard' && path !== '/campaigns' && location.pathname.startsWith(`${path}/`)) ? 'active' : ''}`} key={`${group.label}-${label}`} to={path} onClick={() => setSidebarOpen(false)}><Icon size={16} /><span>{label}</span></Link>)}</div> : null })}</nav>
       <div className="sidebar-bottom"><Link className="nav-item" to="/admin"><Settings size={17} /><span>Workspace Management</span></Link><div className="sidebar-rule" /><button className="user-chip"><span className="user-avatar">{user.display_name.charAt(0).toUpperCase()}</span><span><strong>{user.display_name}</strong><small>{user.roles[0] ?? 'Member'}</small></span><ChevronDown size={15} /></button></div>
     </aside>
     {sidebarOpen && <button className="scrim" onClick={() => setSidebarOpen(false)} aria-label="Close navigation" />}

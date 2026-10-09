@@ -31,6 +31,10 @@ async function request<T>(
           : "Campaign request failed",
     );
   }
+  // 204 No Content has an empty body; response.json() would reject it.
+  if (response.status === 204 || response.headers.get("content-length") === "0") {
+    return undefined as T;
+  }
   return response.json() as Promise<T>;
 }
 export const campaignsApi = {

@@ -3,8 +3,11 @@
 #
 # A backup is not considered valid until restoration has been tested. This
 # script takes a specific PostgreSQL dump (or the newest one in BACKUP_DIR),
-# restores it into an isolated scratch database, and runs lightweight integrity
-# checks (schema present, key tables non-empty, alembic version at head).
+# restores it into an isolated scratch database, and runs integrity checks.
+#
+# Exits non-zero when the dump is structurally incomplete: a required table is
+# missing, tenants/users restored empty, or alembic_version is absent. Tables
+# that are legitimately empty on a young install are reported but do not fail.
 #
 # Usage:
 #   verify_backup.sh [path/to/dump.sql.gz]
@@ -41,14 +44,49 @@ zcat "$DUMP" | PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -p "$PGPORT" -U "$PGUS
 log "Restore succeeded"
 
 # Integrity checks -------------------------------------------------------- #
+# A restore that succeeds is not sufficient. This section fails the run when the
+# dump is structurally incomplete, and separately reports tables that restored
+# but are empty, so a truncated or wrong-tenant dump cannot be called PASSED.
 log "Checking schema and key tables"
-TABLES="tenants users role_permissions import_jobs campaigns scheduled_messages delivery_jobs"
-for t in $TABLES; do
+
+FAILURES=0
+WARNINGS=0
+
+fail() { log "  FAIL: $1"; FAILURES=$((FAILURES + 1)); }
+warn() { log "  WARN: $1"; WARNINGS=$((WARNINGS + 1)); }
+
+# Tables that must exist in any usable dump of this schema.
+REQUIRED_TABLES="tenants users role_permissions import_jobs campaigns scheduled_messages delivery_jobs"
+# Tables that must additionally contain at least one row; every other table is
+# legitimately empty on a young or lightly used install.
+MUST_BE_NONEMPTY="tenants users"
+
+for t in $REQUIRED_TABLES; do
     COUNT=$(PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$VERIFY_DB" -tAc "SELECT COUNT(*) FROM $t" 2>/dev/null || echo "ERR")
+    if [ "$COUNT" = "ERR" ]; then
+        fail "table '$t' is missing from the restored dump"
+        continue
+    fi
     log "  $t: $COUNT rows"
+    case " $MUST_BE_NONEMPTY " in
+        *" $t "*) [ "$COUNT" -gt 0 ] || fail "table '$t' restored empty" ;;
+    esac
 done
 
 ALEMBIC_VERSION=$(PGPASSWORD="$PGPASSWORD" psql -h "$PGHOST" -p "$PGPORT" -U "$PGUSER" -d "$VERIFY_DB" -tAc "SELECT version_num FROM alembic_version" 2>/dev/null || echo "none")
-log "alembic_version: $ALEMBIC_VERSION"
+if [ -z "$ALEMBIC_VERSION" ] || [ "$ALEMBIC_VERSION" = "none" ]; then
+    fail "alembic_version is missing; the dump has no migration state and cannot be trusted"
+else
+    log "alembic_version: $ALEMBIC_VERSION"
+    log "  (compare against the target deployment's alembic head before promoting this dump)"
+fi
 
-log "Verification PASSED for $DUMP"
+if [ "$FAILURES" -gt 0 ]; then
+    log "Verification FAILED for $DUMP ($FAILURES failure(s), $WARNINGS warning(s))"
+    exit 1
+fi
+if [ "$WARNINGS" -gt 0 ]; then
+    log "Verification PASSED WITH WARNINGS for $DUMP ($WARNINGS warning(s))"
+else
+    log "Verification PASSED for $DUMP"
+fi

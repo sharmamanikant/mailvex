@@ -224,7 +224,9 @@ def _patch_microsoft_callback(monkeypatch: pytest.MonkeyPatch) -> None:
     """Replace the Microsoft adapter's token exchange with a controllable fake."""
     global CURRENT_CALLBACK
     CURRENT_CALLBACK = None
-    from app.email_providers.microsoft.workspace import MicrosoftWorkspaceProviderConnection
+    from app.email_providers.microsoft.workspace import (
+        MicrosoftWorkspaceProviderConnection,
+    )
 
     monkeypatch.setattr(
         MicrosoftWorkspaceProviderConnection,
@@ -606,7 +608,9 @@ def test_trailing_slash_callback_redirect(ms_provider_client) -> None:
 # 18. Adapter unit details (no network)
 # ------------------------------------------------------------------ #
 def test_authority_resolves_organizations_for_common() -> None:
-    from app.email_providers.microsoft.workspace import MicrosoftWorkspaceProviderConnection
+    from app.email_providers.microsoft.workspace import (
+        MicrosoftWorkspaceProviderConnection,
+    )
 
     adapter = MicrosoftWorkspaceProviderConnection()
     assert adapter._authority == "https://login.microsoftonline.com/organizations"

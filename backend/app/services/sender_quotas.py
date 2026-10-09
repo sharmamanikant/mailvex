@@ -29,6 +29,16 @@ class SenderQuotaExceeded(Exception):
         super().__init__(f"{kind} daily limit of {limit} reached; retry after {retry_after}s")
 
 
+class SenderQuotaUnavailable(RuntimeError):
+    """The quota counter store is unreachable, so the send cannot be metered.
+
+    Raised instead of :class:`SenderQuotaExceeded` when Redis is down.  Both
+    refuse the send (the quota still fails closed), but reporting an outage as
+    "limit of 30 reached, retry after 86400s" sends operators hunting for
+    exhausted senders instead of a broker outage.
+    """
+
+
 class SenderQuotaService:
     """Meters campaign and warmup sends per SenderAccount against Redis."""
 
@@ -55,6 +65,10 @@ class SenderQuotaService:
     def _guarded(self, account: SenderAccount, kind: str, limit: int | None) -> None:
         result = self._check(_key(account.id, kind), limit)
         if not result.allowed:
+            if result.unavailable:
+                raise SenderQuotaUnavailable(
+                    f"{kind} quota cannot be metered right now; the send was refused"
+                )
             raise SenderQuotaExceeded(kind, limit or 0, result.retry_after)
 
     def _check(self, key: str, limit: int | None) -> RateLimitResult:

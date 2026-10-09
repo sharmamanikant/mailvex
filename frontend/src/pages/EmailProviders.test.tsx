@@ -24,8 +24,14 @@ const mocks = vi.hoisted(() => {
     created_at: '2026-09-16T10:00:00Z',
     updated_at: '2026-09-16T10:00:00Z',
   }
-  return { connection, startGoogle: vi.fn(), refresh: vi.fn() }
+  return { connection, startGoogle: vi.fn(), refresh: vi.fn(), redirectTo: vi.fn() }
 })
+
+// jsdom cannot perform real navigations, so the OAuth hand-off is stubbed and
+// asserted directly instead of throwing a not-implemented error.
+vi.mock('../lib/navigation', () => ({
+  redirectTo: (...args: unknown[]) => mocks.redirectTo(...args),
+}))
 
 vi.mock('../api/providerConnections', () => ({
   providerConnectionsApi: {
@@ -66,12 +72,14 @@ describe('EmailProviders', () => {
     expect(await screen.findByText(/connection cancelled/i)).toBeInTheDocument()
   })
 
-  it('starts google connect and requests an authorization url', async () => {
+  it('starts google connect and redirects to the provider authorization url', async () => {
     mocks.startGoogle.mockResolvedValue({ authorization_url: 'https://accounts.google.com/o/oauth2/auth?state=x' })
+    mocks.redirectTo.mockClear()
     const user = userEvent.setup()
     renderPage()
     await user.click(await screen.findByRole('button', { name: /Connect Google Workspace/i }))
     await waitFor(() => expect(mocks.startGoogle).toHaveBeenCalledWith('token'))
+    await waitFor(() => expect(mocks.redirectTo).toHaveBeenCalledWith('https://accounts.google.com/o/oauth2/auth?state=x'))
   })
 
   it('offers a refresh action for a connected provider', async () => {

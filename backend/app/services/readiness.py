@@ -11,6 +11,7 @@ from sqlalchemy.orm import Session
 
 from app.core.config import settings
 from app.core.database import engine
+from app.core.redis_client import build_redis_client
 
 HEARTBEAT_MAX_AGE = timedelta(minutes=2)
 
@@ -63,12 +64,7 @@ def readiness() -> dict[str, str]:
     except Exception:
         pass
     try:
-        redis = Redis.from_url(
-            settings.redis_url,
-            decode_responses=True,
-            socket_connect_timeout=2.0,
-            socket_timeout=2.0,
-        )
+        redis = build_redis_client(settings.redis_url)
         if redis.ping():
             checks["redis"] = "ready"
             checks["worker"] = "ready" if _heartbeat(redis, "worker") else "failed"

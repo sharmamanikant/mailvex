@@ -277,14 +277,16 @@ class WorkspaceSenderService:
                     "Some requested mailboxes were not found in this tenant/connection",
                     sorted(missing),
                 )
-            eligible_filters = base_filters + [
+            eligible_filters = [
+                *base_filters,
                 Mailbox.id.in_(requested),
                 Mailbox.provider_status.in_(ELIGIBLE_MAILBOX_STATUSES),
                 Mailbox.is_suspended == False,  # noqa: E712
                 Mailbox.is_deleted == False,  # noqa: E712
             ]
         else:
-            eligible_filters = base_filters + [
+            eligible_filters = [
+                *base_filters,
                 Mailbox.provider_status.in_(ELIGIBLE_MAILBOX_STATUSES),
                 Mailbox.is_suspended == False,  # noqa: E712
                 Mailbox.is_deleted == False,  # noqa: E712

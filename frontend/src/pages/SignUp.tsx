@@ -2,6 +2,7 @@ import { useState } from 'react'
 import type { FormEvent } from 'react'
 import { authApi } from '../api/client'
 import { AuthLayout } from './SignIn'
+import { redirectTo } from '../lib/navigation'
 
 export default function SignUpPage() {
   const [name, setName] = useState('')
@@ -19,7 +20,7 @@ export default function SignUpPage() {
     try {
       const result = await authApi.signup(name, email, password)
       localStorage.setItem('crcrm_access_token', result.access_token)
-      window.location.assign(nextPath?.startsWith('/') ? nextPath : '/dashboard')
+      redirectTo(nextPath?.startsWith('/') ? nextPath : '/dashboard')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to create your account')
     } finally {

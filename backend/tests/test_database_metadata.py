@@ -101,6 +101,9 @@ def test_foreign_keys_are_declared() -> None:
         "external_identity_id",
         # Celery task identifier (not a relational FK).
         "celery_task_id",
+        # App-level idempotency anchor for outbound_messages (a UUID minted by
+        # the app, not a reference to another table).
+        "correlation_id",
     }
     assert all(
         any(isinstance(constraint, ForeignKey) for constraint in column.foreign_keys)

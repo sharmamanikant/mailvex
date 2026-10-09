@@ -3,6 +3,7 @@ from __future__ import annotations
 import csv
 import io
 import json
+import logging
 from datetime import UTC, datetime
 from pathlib import Path
 from uuid import UUID, uuid4
@@ -26,11 +27,17 @@ from app.services.imports import (
     ImportService,
     ImportValidationError,
 )
-from app.workers.imports import TERMINAL_JOB_STATES, enqueue_import, enqueue_validate
+from app.workers.imports import (
+    TERMINAL_JOB_STATES,
+    QueueUnavailable,
+    enqueue_import,
+    enqueue_validate,
+)
 
 router = APIRouter(prefix="/contacts/imports", tags=["contact-imports"])
 UPLOAD_DIR = (Path(settings.storage_root).expanduser() / "imports").resolve()
 STUCK_JOB_AFTER_SECONDS = 30
+logger = logging.getLogger(__name__)
 
 
 class ImportJobUpdate(BaseModel):
@@ -114,7 +121,15 @@ async def create_import(file: UploadFile = File(...), principal: TenantPrincipal
     job = ImportJob(tenant_id=principal.tenant_id, created_by_id=principal.user_id, filename=file.filename or source_file.name, file_type=extension[1:], status="UPLOADED", column_mapping={}, counts={}, preview={}, source_file_ref=str(source_file))
     session.add(job)
     session.commit()
-    enqueue_validate(job.id, principal.tenant_id, str(source_file))
+    try:
+        enqueue_validate(job.id, principal.tenant_id, str(source_file))
+    except QueueUnavailable as exc:
+        # The upload itself succeeded, so keep the row in UPLOADED: the status
+        # poll re-queues it as soon as the broker recovers (see _kick_stuck_job).
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail=f"Validation could not be queued. Retry status polling on job {job.id}.",
+        ) from exc
     return _job_dto(job)
 
 
@@ -134,6 +149,9 @@ def _kick_stuck_job(job: ImportJob) -> None:
     validation never writes contacts and import replay is idempotent under every
     duplicate policy. The heartbeat is ``updated_at``, which every progress
     batch refreshes.
+
+    A broker outage must not turn this read into an error: the retry simply
+    happens on a later poll, so the failure is swallowed deliberately.
     """
     source_file = job.source_file_ref
     if not source_file or not Path(source_file).exists():
@@ -141,10 +159,13 @@ def _kick_stuck_job(job: ImportJob) -> None:
     heartbeat = job.updated_at.replace(tzinfo=UTC) if job.updated_at and job.updated_at.tzinfo is None else job.updated_at
     if heartbeat is None or (datetime.now(UTC) - heartbeat).total_seconds() < STUCK_JOB_AFTER_SECONDS:
         return
-    if job.status == "IMPORTING":
-        enqueue_import(job.id, job.tenant_id, source_file, job.column_mapping, job.duplicate_policy)
-    elif job.status in {"UPLOADED", "VALIDATING"}:
-        enqueue_validate(job.id, job.tenant_id, source_file)
+    try:
+        if job.status == "IMPORTING":
+            enqueue_import(job.id, job.tenant_id, source_file, job.column_mapping, job.duplicate_policy)
+        elif job.status in {"UPLOADED", "VALIDATING"}:
+            enqueue_validate(job.id, job.tenant_id, source_file)
+    except QueueUnavailable:
+        logger.warning("Import job %s is stalled and could not be re-queued", job.id)
 
 
 @router.put("/{job_id}")
@@ -175,7 +196,18 @@ def start_import(job_id: UUID, principal: TenantPrincipal = Depends(require_perm
         raise HTTPException(status_code=status.HTTP_400_BAD_REQUEST, detail="An email column is required")
     job.status = "IMPORTING"
     session.commit()
-    enqueue_import(job.id, principal.tenant_id, job.source_file_ref, job.column_mapping, job.duplicate_policy)
+    try:
+        enqueue_import(job.id, principal.tenant_id, job.source_file_ref, job.column_mapping, job.duplicate_policy)
+    except QueueUnavailable as exc:
+        # Nothing is queued, so leaving the job in IMPORTING would strand it
+        # until the stale-job reclaimer fires.  Roll it back to READY so the
+        # caller can retry immediately.
+        job.status = "READY"
+        session.commit()
+        raise HTTPException(
+            status_code=status.HTTP_503_SERVICE_UNAVAILABLE,
+            detail="The import queue is unavailable. Retry in a moment.",
+        ) from exc
     return _job_dto(job)
 
 

@@ -17,6 +17,31 @@ backups/
 coverage.xml
 htmlcov/
 
+# Virtual environments. A committed venv pins absolute paths and native
+# binaries to one machine and inflates the repository.
+.venv/
+.venv*/
+venv/
+env/
+
+# TypeScript incremental build state
+*.tsbuildinfo
+
+# `tsc` emits next to the source when a .js sibling is absent, which would
+# otherwise commit compiled output alongside vite.config.ts.
+vite.config.js
+vite.config.d.ts
+
+# Runtime and tool logs
+*.log
+npm-debug.log*
+yarn-error.log*
+
+# Test/probe scratch files created by the backend suite
+.contact-test*
+.test-tmp*
+.pytest-runcheck-tmp*
+
 # TLS/private key material must never be committed
 nginx/certs/*.key
 nginx/certs/*.crt

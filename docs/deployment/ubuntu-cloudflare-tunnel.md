@@ -30,8 +30,8 @@ nginx  (container, port published to loopback ONLY)
    +-- /health --> backend:8000
    +-- /      ---> frontend:80
                    |
-                   +--> postgres:5432  (no published port)
-                    +--> redis:6379     (no published port)
+                   +--> PostgreSQL 192.168.0.12:5432 (separate server)
+                    +--> redis:6379   (internal Docker network)
 ```
 
 ### The deployed tunnel
@@ -65,8 +65,8 @@ Three properties of this layout are deliberate. Do not "simplify" them away:
    opened, which is the main reason to use a tunnel rather than port forwarding.
 2. **Only one port is published, and it is bound to `127.0.0.1`.** Other
    machines on `192.168.0.0/24` cannot reach the app even if they know the IP.
-   Postgres and Redis publish no port at all and exist only on the internal
-   Docker network.
+   Redis stays on the internal Docker network. PostgreSQL runs on the separate
+   database host and should accept connections only from approved private hosts.
 3. **TLS terminates at Cloudflare.** nginx speaks plain HTTP on loopback. The
    `cloudflared`-to-origin hop is local to the machine, so it never crosses a
    network you do not control.
@@ -141,9 +141,12 @@ Then edit it. Every value must be replaced; the app refuses to start in
 | Variable | Notes |
 | --- | --- |
 | `RUNTIME_ENV_FILE` | Leave as `.env.production`. The file refers to itself so containers can mount the same config. |
-| `POSTGRES_PASSWORD` | The database password. |
+| `POSTGRES_HOST` | Private PostgreSQL host, such as `192.168.0.12`. |
+| `POSTGRES_DB` | App database, normally `crcrm`. |
+| `POSTGRES_USER` | Least-privilege app role, normally `crcrm_app`; do not use the PostgreSQL superuser in the app. |
+| `POSTGRES_PASSWORD` | Password for `POSTGRES_USER`; it must match `DATABASE_URL`. |
 | `REDIS_PASSWORD` | Redis password. `REDIS_URL` is derived from it in Compose, so never set `REDIS_URL` by hand. A mismatch is a silent outage. |
-| `DATABASE_URL` | Must embed the same password as `POSTGRES_PASSWORD`. |
+| `DATABASE_URL` | Connect to `POSTGRES_HOST:5432` and embed the app role and same password as `POSTGRES_PASSWORD`. |
 | `JWT_SECRET` | Long random value. Rotating it logs every user out. |
 | `ENCRYPTION_KEY` | Rotating it makes existing stored credentials unreadable. |
 | `ALLOWED_ORIGINS` | `https://mailvex.in` |
@@ -166,12 +169,55 @@ docker compose --env-file .env.production config --quiet
 
 ---
 
+### Create the application database once
+
+On the PostgreSQL server, create a dedicated role and database. Use a new
+strong password for `crcrm_app`; do not reuse the PostgreSQL administrator
+password. Put that app-role password in `POSTGRES_PASSWORD` and `DATABASE_URL`
+in the app's `.env.production` file.
+
+```bash
+sudo -u postgres psql
+```
+
+At the `psql` prompt, create the app role and database once, and create a
+separate backup account. Set passwords with `\password` so they are not
+written into SQL history:
+
+```sql
+CREATE ROLE crcrm_app LOGIN;
+\password crcrm_app
+CREATE DATABASE crcrm OWNER crcrm_app;
+CREATE ROLE crcrm_backup LOGIN CREATEDB;
+\password crcrm_backup
+GRANT CONNECT ON DATABASE crcrm TO crcrm_backup;
+\c crcrm
+GRANT USAGE ON SCHEMA public TO crcrm_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE crcrm_app IN SCHEMA public GRANT SELECT ON TABLES TO crcrm_backup;
+ALTER DEFAULT PRIVILEGES FOR ROLE crcrm_app IN SCHEMA public GRANT USAGE, SELECT ON SEQUENCES TO crcrm_backup;
+```
+
+Use the `crcrm_app` password in `POSTGRES_PASSWORD` and `DATABASE_URL`, and the
+`crcrm_backup` password in `BACKUP_PGPASSWORD`. The backup login is separate
+from the application login; it needs `CREATEDB` only to restore dumps into
+isolated scratch databases for verification.
+
+Configure PostgreSQL to listen on its private address and allow the app host
+(`192.168.0.13/32`) in `pg_hba.conf`. If local development also needs access,
+add that workstation's private IP as a separate rule. Restrict the firewall
+accordingly; never expose port 5432 to the public internet. Restart PostgreSQL
+and confirm port 5432 is reachable from the app host before deployment.
+
 ## 4. Build and start the application
 
 ```bash
 docker compose --env-file .env.production build
-docker compose --env-file .env.production up -d
+docker compose --env-file .env.production up -d --remove-orphans
 ```
+
+On an upgrade from the previous Compose file, `--remove-orphans` removes its
+old PostgreSQL container. It keeps the old Docker volume; do not use `down -v`
+as part of this change.
 
 Startup is ordered by health dependencies, so `migrate` completes before the
 API starts and the API becomes healthy before nginx and the frontend come up:
@@ -180,8 +226,9 @@ API starts and the API becomes healthy before nginx and the frontend come up:
 docker compose --env-file .env.production ps
 ```
 
-Expected state: `postgres`, `redis`, `backend`, `worker`, `scheduler`,
-`frontend`, `nginx` all `(healthy)`, `backup` `Up`, `migrate` `Exited (0)`.
+Expected state: `redis`, `backend`, `worker`, `scheduler`, `frontend`, and
+`nginx` healthy; `backup` running; `migrate` exited with status 0. PostgreSQL
+is managed separately and does not appear in `docker compose ps`.
 
 Confirm the migration landed and confirm the origin responds:
 
@@ -364,14 +411,20 @@ docker compose --env-file .env.production logs -f backend
 docker compose --env-file .env.production logs -f worker
 
 # update
-git pull
-docker compose --env-file .env.production build
-docker compose --env-file .env.production up -d
+git pull --ff-only
+export APP_BUILD_REV="$(git rev-parse --short HEAD)"
+docker compose --env-file .env.production build --pull frontend
+docker compose --env-file .env.production up -d --no-deps --force-recreate frontend
+
+# verify the frontend container and published app
+docker compose --env-file .env.production ps frontend nginx
+curl -fsS http://127.0.0.1:8080/health/ready
 
 # rollback
 git checkout <previous-tag>
-docker compose --env-file .env.production build
-docker compose --env-file .env.production up -d
+export APP_BUILD_REV="$(git rev-parse --short HEAD)"
+docker compose --env-file .env.production build --pull frontend
+docker compose --env-file .env.production up -d --no-deps --force-recreate frontend
 
 # restart one service
 docker compose --env-file .env.production restart backend
@@ -451,13 +504,15 @@ were checked out with CRLF line endings. `.gitattributes` pins LF for this
 repository; verify with `file infrastructure/backup/backup.sh` and rebuild the
 image if needed.
 
-**Database password rejected after changing `.env.production`.** `POSTGRES_PASSWORD`
-only applies when the data directory is initialised. On an existing volume, set
-the password inside the database instead:
+**Database password rejected.** `POSTGRES_PASSWORD` is the dedicated app-role
+password and must match `DATABASE_URL`. Do not put the PostgreSQL superuser
+password in the app configuration. Change the app role password on the database
+host and update both values in `.env.production` together.
 
 ```bash
-docker compose --env-file .env.production exec postgres \
-  psql -U app -d crcrm -c "ALTER USER app WITH PASSWORD 'new-password';"
+sudo -u postgres psql -d crcrm
+# At the psql prompt:
+\password crcrm_app
 ```
 
 ---

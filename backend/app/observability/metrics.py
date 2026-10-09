@@ -15,6 +15,7 @@ from typing import Any, cast
 from redis import Redis
 
 from app.core.config import settings
+from app.core.redis_client import build_redis_client
 
 _KEY_PREFIX = "crcrm:metrics"
 _MAX_SUFFIX = ".max"
@@ -205,12 +206,7 @@ def get_redis() -> Redis:
 
 
 def _build_client() -> Redis:
-    return Redis.from_url(
-        settings.redis_url,
-        decode_responses=True,
-        socket_connect_timeout=2.0,
-        socket_timeout=2.0,
-    )
+    return build_redis_client(settings.redis_url)
 
 
 def get_metrics() -> MetricsService:

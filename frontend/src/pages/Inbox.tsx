@@ -1,6 +1,7 @@
 import { useMutation, useQuery, useQueryClient } from '@tanstack/react-query'
 import { useEffect, useState } from 'react'
 import { AlertTriangle, Check, Download, Inbox as InboxIcon, Languages, Mail, MessageSquareText, RefreshCw, Sparkles, UserRound, Wand2, X } from 'lucide-react'
+import { Link } from 'react-router-dom'
 import { inboxApi } from '../api/inbox'
 import { sendersApi } from '../api/senders'
 import type { AssistantDraftResult, InboxMessage, InboxThread } from '../types/inbox'
@@ -231,6 +232,6 @@ function RecipientPanel({ id, accessToken }: { id: string; accessToken: string }
       <Row label="Email" value={recipient.email} />
       <Row label="Contact ID" value={recipient.contact_id} />
     </div>
-    {detail.data.campaign_name && recipient.campaign_id && <button className="outline-button" onClick={() => window.location.assign(`/campaigns/${recipient.campaign_id}`)}>Open campaign</button>}
+    {detail.data.campaign_name && recipient.campaign_id && <Link className="outline-button" to={`/campaigns/${recipient.campaign_id}`}>Open campaign</Link>}
   </div>
 }

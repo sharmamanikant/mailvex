@@ -20,7 +20,7 @@ The production Compose definition starts the following services on the private
 
 | Service | Purpose | Exposure |
 | --- | --- | --- |
-| `postgres` | PostgreSQL 16 application database | private only |
+| PostgreSQL | Application database on the private database host | private network, allowlisted from the app host |
 | `redis` | Celery broker, cache, rate-limit and operational state | private only |
 | `migrate` | one-shot Alembic migration job | private only |
 | `backend` | FastAPI/Uvicorn API | through nginx only |
@@ -48,8 +48,8 @@ broker configuration support the desired level of parallelism.
   prerequisite. PostgreSQL, Redis, backend, and frontend publish no port.
 - Outbound access from the backend/worker for the enabled OAuth providers,
   SMTP relay, and DNS resolver. Contact validation requires UDP and TCP 53.
-- Persistent, encrypted storage for database volumes, uploads, and backups.
-  The Compose stack uses its `uploads_data` named volume for application upload
+- Persistent, encrypted storage for the external database, uploads, and
+  backups. Compose uses its `uploads_data` named volume for application upload
   storage; protect the Docker volume with encrypted host storage.
 - Off-host replication for backups. The `backups_data` volume alone does not
   protect against loss of the host.
@@ -73,7 +73,10 @@ from accidentally inheriting the root development `.env`.
 Set the values for the actual public hostname and production accounts. At a
 minimum, configure distinct, non-placeholder values for:
 
-- `POSTGRES_PASSWORD` and a matching `DATABASE_URL`
+- `POSTGRES_HOST`, `POSTGRES_DB`, `POSTGRES_USER`, and `POSTGRES_PASSWORD`;
+  `DATABASE_URL` must use the same app-role credentials
+- `BACKUP_PGUSER` and `BACKUP_PGPASSWORD` for a dedicated backup role with
+  database read access and `CREATEDB` for restore verification
 - `JWT_SECRET` and `ENCRYPTION_KEY` (32 bytes or more)
 - `REDIS_URL`
 - `ALLOWED_ORIGINS` and `ALLOWED_HOSTS`
@@ -108,12 +111,13 @@ docker compose --env-file .env.production config --quiet
    docker compose --env-file .env.production build
    ```
 
-4. Start only the stateful dependencies and backup service. Wait until
-   PostgreSQL and Redis report healthy:
+4. Start Redis and the backup service. Confirm the external PostgreSQL host is
+   reachable from the app host on port 5432:
 
    ```powershell
-   docker compose --env-file .env.production up -d postgres redis backup
+   docker compose --env-file .env.production up -d redis backup
    docker compose --env-file .env.production ps
+   docker compose --env-file .env.production exec backup pg_isready -h 192.168.0.12 -p 5432 -U crcrm_app -d crcrm
    ```
 
 5. Produce a fresh verified database backup immediately before migration:
@@ -131,16 +135,17 @@ docker compose --env-file .env.production config --quiet
 
    ```powershell
    docker compose --env-file .env.production run --rm migrate
-   docker compose --env-file .env.production exec postgres psql -U app -d crcrm -c "select version_num from alembic_version"
+   docker compose --env-file .env.production run --rm migrate alembic current
    ```
 
    The returned revision must be the repository's expected Alembic head. If it
-   is not, stop; do not start the application services.
+   is not, stop; do not start the application services. The `migrate` container
+   connects to the external PostgreSQL host using `DATABASE_URL`.
 
 7. Start the application services:
 
    ```powershell
-   docker compose --env-file .env.production up -d backend worker scheduler frontend nginx
+   docker compose --env-file .env.production up -d --remove-orphans backend worker scheduler frontend nginx
    docker compose --env-file .env.production ps
    ```
 
@@ -180,6 +185,55 @@ docker compose --env-file .env.production restart worker
 Restarting the worker is preferable to restarting the entire stack for a
 worker-only fault. Restarting `scheduler` is safe only when there remains
 exactly one scheduler instance.
+
+### 5.1 Redis capacity
+
+Redis holds the Celery broker (queued send jobs), the Celery result backend,
+rate-limit counters, warmup advisory locks and sender daily quotas. It is
+capped **below** its container memory limit and uses `noeviction`:
+
+| Variable           | Default | Meaning                                             |
+| ------------------ | ------- | --------------------------------------------------- |
+| `REDIS_MAXMEMORY`  | `192mb` | Redis starts returning OOM errors at this point      |
+| `REDIS_MEMORY_LIMIT` | `256M` | Hard container limit (cgroup)                        |
+
+Keeping `maxmemory` under the container limit is deliberate: Redis begins
+failing predictably while it still has headroom to serve reads, instead of being
+OOM-killed by the kernel and restart-looping.
+
+`noeviction` is not a tuning preference. Evicting a key means losing a queued
+send job or resetting a quota counter, and in both cases the campaign still
+reports as queued while nothing is delivered. Instead, a full Redis surfaces
+`503` from the routes that depend on it (rate limiting, OAuth state, sender
+quotas, contact import).
+
+Check headroom and alert before it matters:
+
+```bash
+docker compose --env-file .env.production exec redis \
+  redis-cli -a "$REDIS_PASSWORD" --no-auth-warning info memory | grep -E 'used_memory_human|maxmemory_human'
+docker compose --env-file .env.production exec redis \
+  redis-cli -a "$REDIS_PASSWORD" --no-auth-warning info stats | grep rejected_connections
+```
+
+If Redis is repeatedly at `maxmemory`, raise `REDIS_MAXMEMORY` together with
+`REDIS_MEMORY_LIMIT` and the host's available RAM. Do not switch the policy to
+an eviction strategy to make the symptom disappear.
+
+### 5.2 Restoring from backup
+
+The restore path uses a dedicated `restore` profile service, not the running
+`backup` sidecar. The sidecar mounts the filestore read-only so a backup job can
+never mutate live files; only `restore` mounts it read-write.
+
+```bash
+docker compose --env-file .env.production stop backend worker scheduler
+docker compose --profile restore --env-file .env.production \
+  run --rm restore /backups/crcrm-db-<stamp>.sql.gz
+docker compose --env-file .env.production up -d backend worker scheduler frontend nginx
+```
+
+Full procedure: [Backup and disaster recovery](../operations/backup-disaster-recovery.md).
 
 ## 6. Rollback and incident boundaries
 

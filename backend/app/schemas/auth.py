@@ -30,6 +30,7 @@ class UserResponse(BaseModel):
     email: EmailStr
     display_name: str
     roles: list[str]
+    permissions: list[str] = Field(default_factory=list)
 
 
 class UserSummaryResponse(BaseModel):

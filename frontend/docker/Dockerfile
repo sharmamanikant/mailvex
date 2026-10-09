@@ -1,14 +1,14 @@
 FROM node:20-alpine AS build
 
 WORKDIR /app
-ARG APP_BUILD_REV=campaign-editor-20260825
 COPY package*.json ./
 RUN npm ci
 COPY . .
-RUN echo $APP_BUILD_REV
 RUN npm run build
 
 FROM nginx:1.27-alpine
+ARG APP_BUILD_REV=local
+LABEL org.opencontainers.image.revision=$APP_BUILD_REV
 
 COPY --from=build /app/dist /usr/share/nginx/html
 COPY nginx.conf /etc/nginx/conf.d/default.conf

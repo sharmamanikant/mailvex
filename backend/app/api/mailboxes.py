@@ -22,7 +22,7 @@ import logging
 from typing import cast
 from uuid import UUID
 
-from fastapi import APIRouter, Depends, HTTPException, Query, Response, status
+from fastapi import APIRouter, Depends, HTTPException, Query, status
 from sqlalchemy.orm import Session
 
 from app.core.database import get_db
@@ -40,7 +40,6 @@ from app.services.mailboxes import (
 from app.services.workspace_senders import (
     BulkSenderValidationError,
     SenderError,
-    SenderNotFoundError,
     WorkspaceSenderService,
 )
 

@@ -1,6 +1,7 @@
 import { useState } from 'react'
 import type { FormEvent, ReactNode } from 'react'
 import { authApi } from '../api/client'
+import { redirectTo } from '../lib/navigation'
 
 export default function SignInPage() {
   const [email, setEmail] = useState('')
@@ -17,7 +18,7 @@ export default function SignInPage() {
     try {
       const result = await authApi.login(email, password)
       localStorage.setItem('crcrm_access_token', result.access_token)
-      window.location.assign(nextPath?.startsWith('/') ? nextPath : '/dashboard')
+      redirectTo(nextPath?.startsWith('/') ? nextPath : '/dashboard')
     } catch (reason) {
       setError(reason instanceof Error ? reason.message : 'Unable to sign in')
     } finally {

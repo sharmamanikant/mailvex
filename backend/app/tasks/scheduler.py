@@ -13,6 +13,12 @@ from sqlalchemy import and_, or_, select
 from app.core.config import settings
 from app.core.database import SessionLocal
 from app.core.logging import log_event
+from app.core.redis_client import (
+    SOCKET_CONNECT_TIMEOUT,
+    SOCKET_TIMEOUT,
+    build_redis_client,
+    safe_redis_call,
+)
 from app.models import (
     AlertRecord,
     Campaign,
@@ -31,6 +37,37 @@ from app.workers.delivery_jobs import DeliveryJobWorker
 from app.workers.scheduler import ScheduledMessageWorker
 
 celery_app = Celery("crcrm_scheduler", broker=os.getenv("REDIS_URL", "redis://localhost:6379/0"), backend=os.getenv("REDIS_URL", "redis://localhost:6379/0"))
+# ``send_task`` eagerly subscribes to the result backend.  With the driver
+# defaults that subscribe retried ~20 times with backoff, so a broker blip parked
+# the *API request thread* that triggered the dispatch for minutes.  Bound the
+# socket timeouts and retry policy so dispatch fails fast and the caller can
+# return 503 instead of hanging.
+celery_app.conf.broker_transport_options = {
+    "socket_connect_timeout": SOCKET_CONNECT_TIMEOUT,
+    "socket_timeout": SOCKET_TIMEOUT,
+    "retry_policy": {
+        "max_retries": 2,
+        "interval_start": 0,
+        "interval_step": 0.2,
+        "interval_max": 0.5,
+    },
+}
+celery_app.conf.result_backend_transport_options = {
+    "socket_connect_timeout": SOCKET_CONNECT_TIMEOUT,
+    "socket_timeout": SOCKET_TIMEOUT,
+    "retry_policy": {
+        "max_retries": 1,
+        "interval_start": 0,
+        "interval_step": 0.2,
+        "interval_max": 0.5,
+    },
+}
+celery_app.conf.redis_socket_connect_timeout = SOCKET_CONNECT_TIMEOUT
+celery_app.conf.redis_socket_timeout = SOCKET_TIMEOUT
+celery_app.conf.redis_retry_on_timeout = False
+celery_app.conf.broker_connection_retry_on_startup = True
+celery_app.conf.task_acks_late = True
+celery_app.conf.worker_prefetch_multiplier = 1
 celery_app.conf.task_routes = {
     "crcrm.send_warmup_message": {"queue": "warmup"},
 }
@@ -81,12 +118,7 @@ metrics = get_metrics()
 
 
 def _redis() -> Redis:
-    return Redis.from_url(
-        os.getenv("REDIS_URL", "redis://localhost:6379/0"),
-        decode_responses=True,
-        socket_connect_timeout=2.0,
-        socket_timeout=2.0,
-    )
+    return build_redis_client()
 
 
 @heartbeat_sent.connect
@@ -95,11 +127,22 @@ def worker_heartbeat(**_kwargs: object) -> None:
 
 
 def _worker_heartbeat() -> None:
-    _redis().set("crcrm:heartbeat:worker", datetime.now(UTC).isoformat(), ex=120)
+    # Liveness signalling only.  If this raises, Celery treats the emit as a
+    # task failure, so it must never propagate.
+    safe_redis_call(
+        "worker heartbeat",
+        lambda: _redis().set("crcrm:heartbeat:worker", datetime.now(UTC).isoformat(), ex=120),
+    )
 
 
 def _scheduler_heartbeat() -> None:
-    _redis().set("crcrm:heartbeat:scheduler", datetime.now(UTC).isoformat(), ex=120)
+    # Same reasoning as the worker heartbeat: this is a diagnostic write that
+    # used to abort the whole beat task (and therefore scheduled-message and
+    # delivery-job dispatch) whenever Redis was briefly unavailable.
+    safe_redis_call(
+        "scheduler heartbeat",
+        lambda: _redis().set("crcrm:heartbeat:scheduler", datetime.now(UTC).isoformat(), ex=120),
+    )
 
 
 @celery_app.task(name="crcrm.dispatch_due_scheduled_messages")

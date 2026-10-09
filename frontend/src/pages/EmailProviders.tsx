@@ -4,6 +4,7 @@ import { CheckCircle2, CircleAlert, Cloud, Link2, Puzzle, RefreshCw, Trash2 } fr
 import type { ReactNode } from 'react'
 import type { ProviderConnection } from '../types/providerConnections'
 import { providerConnectionsApi } from '../api/providerConnections'
+import { redirectTo } from '../lib/navigation'
 
 const errorMessages: Record<string, string> = {
   access_denied: 'Connection cancelled. Sign-in was not completed.',
@@ -202,7 +203,7 @@ export default function EmailProviders({ accessToken }: { accessToken: string })
   const startGoogle = useMutation({
     mutationFn: () => providerConnectionsApi.startGoogle(accessToken),
     onSuccess: (result) => {
-      window.location.assign(result.authorization_url)
+      redirectTo(result.authorization_url)
     },
     onError: (error: Error) => {
       setSearchParams({ status: 'error', error: 'oauth_failed' }, { replace: true })
@@ -213,7 +214,7 @@ export default function EmailProviders({ accessToken }: { accessToken: string })
   const startMicrosoft = useMutation({
     mutationFn: () => providerConnectionsApi.startMicrosoft(accessToken),
     onSuccess: (result) => {
-      window.location.assign(result.authorization_url)
+      redirectTo(result.authorization_url)
     },
     onError: (error: Error) => {
       setSearchParams({ status: 'error', error: 'oauth_failed' }, { replace: true })
