@@ -50,6 +50,7 @@ export default function ContactImport({ accessToken }: { accessToken: string }) 
   const urlJobId = searchParams.get('job')
   const [job, setJob] = useState<ImportJob | null>(null)
   const [busy, setBusy] = useState(false)
+  const [uploadProgress, setUploadProgress] = useState<number | null>(null)
   const [error, setError] = useState('')
   const [draft, setDraft] = useState<Record<string, string>>({})
   const [policy, setPolicy] = useState<DuplicatePolicy>('SKIP')
@@ -102,8 +103,9 @@ export default function ContactImport({ accessToken }: { accessToken: string }) 
     setError('')
     if (!selected) return
     setBusy(true)
+    setUploadProgress(0)
     try {
-      const created = await importsApi.create(selected, accessToken)
+      const created = await importsApi.create(selected, accessToken, (percent) => setUploadProgress(percent))
       setJob(created)
       setSearchParams({ job: created.id }, { replace: true })
       lastJobId.current = null
@@ -111,6 +113,7 @@ export default function ContactImport({ accessToken }: { accessToken: string }) 
       setError(cause instanceof Error ? cause.message : 'Could not upload file')
     } finally {
       setBusy(false)
+      setUploadProgress(null)
     }
   }
 
@@ -221,7 +224,13 @@ export default function ContactImport({ accessToken }: { accessToken: string }) 
             <input type="file" accept=".csv,.xlsx" onChange={(event) => void chooseFile(event.target.files?.[0] ?? null)} />
             <FileSpreadsheet size={30} />
             <strong>{busy ? 'Uploading file...' : 'Choose a CSV or XLSX file'}</strong>
-            <span>Up to 10 MB. The first row is used as column headers. Only .csv and .xlsx are accepted.</span>
+            {busy && uploadProgress !== null ? (
+              <div className="progress-track upload-progress">
+                <div className="progress-fill" style={{ width: `${uploadProgress}%` }} />
+              </div>
+            ) : (
+              <span>Up to 10 MB. The first row is used as column headers. Only .csv and .xlsx are accepted.</span>
+            )}
           </label>
         </div>
       )}
